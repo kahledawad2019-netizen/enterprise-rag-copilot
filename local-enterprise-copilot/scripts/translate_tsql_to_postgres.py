@@ -634,15 +634,62 @@ def convert_recursive_cte(sql: str) -> str:
 
 
 def convert_apply(sql: str) -> str:
-    """APPLY -> LATERAL.
+    """APPLY -> LATERAL, including the join condition PostgreSQL requires.
 
-    CROSS APPLY is CROSS JOIN LATERAL. OUTER APPLY is LEFT JOIN LATERAL with
-    `ON TRUE`, because a LEFT JOIN needs a condition and the lateral
-    subquery's own WHERE already did the filtering.
+        CROSS APPLY (...) AS a   ->  CROSS JOIN LATERAL (...) AS a
+        OUTER APPLY (...) AS a   ->  LEFT JOIN LATERAL (...) AS a ON TRUE
+
+    The ON TRUE is not decoration. A LEFT JOIN must have a join condition, and
+    a lateral subquery has already done its own filtering in its WHERE, so the
+    condition is vacuously true. Without it PostgreSQL reports
+
+        syntax error at or near ";"
+
+    pointing at the end of the statement rather than at the join - which is
+    why the first version of this rule, which only swapped the keywords,
+    looked complete and was not.
+
+    The closing parenthesis is located with the balanced scanner rather than a
+    regex, because these subqueries contain nested parentheses of their own.
     """
     sql = re.sub(r"\bCROSS\s+APPLY\b", "CROSS JOIN LATERAL", sql, flags=re.IGNORECASE)
-    sql = re.sub(r"\bOUTER\s+APPLY\b", "LEFT JOIN LATERAL", sql, flags=re.IGNORECASE)
-    return sql
+
+    pattern = re.compile(r"\bOUTER\s+APPLY\s*(?=\()", re.IGNORECASE)
+    out: list[str] = []
+    cursor = 0
+
+    while True:
+        match = pattern.search(sql, cursor)
+        if match is None:
+            out.append(sql[cursor:])
+            break
+
+        paren = sql.index("(", match.end() - 1)
+        parsed = _split_args(sql, paren)
+        if parsed is None:
+            out.append(sql[cursor:match.end()])
+            cursor = match.end()
+            continue
+
+        _, end_of_subquery = parsed
+
+        # A derived-table alias normally follows the subquery, and ON TRUE
+        # belongs after that alias. Require leading whitespace so a following
+        # punctuation mark or SQL clause can never be mistaken for an alias.
+        alias = re.match(
+            r"\s+(?:AS\s+)?(?:\[[A-Za-z_]\w*\]|[A-Za-z_]\w*)",
+            sql[end_of_subquery:],
+            re.IGNORECASE,
+        )
+        insert_at = end_of_subquery + (alias.end() if alias else 0)
+
+        out.append(sql[cursor:match.start()])
+        out.append("LEFT JOIN LATERAL ")
+        out.append(sql[paren:insert_at])
+        out.append(" ON TRUE")
+        cursor = insert_at
+
+    return "".join(out)
 
 
 def convert_print(sql: str) -> str:

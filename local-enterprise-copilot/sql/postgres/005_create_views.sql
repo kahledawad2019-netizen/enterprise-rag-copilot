@@ -228,7 +228,7 @@ LEFT JOIN LATERAL (
 )
     ORDER BY sp.effective_from DESC
     LIMIT 1
-) AS pol;
+) AS pol ON TRUE;
 
 /* ---------------------------------------------------------------------------
    analytics.vw_customer_360
@@ -279,7 +279,7 @@ LEFT JOIN LATERAL (
            SUM(s.seats)    AS total_seats
     FROM core.subscriptions s
     WHERE s.customer_id = c.customer_id AND s.status = 'active' AND s.is_trial = FALSE
-) AS sub
+) AS sub ON TRUE
 LEFT JOIN LATERAL (
     SELECT SUM(i.total_amount) AS lifetime_billed,
            SUM(i.amount_paid)  AS lifetime_paid,
@@ -288,33 +288,33 @@ LEFT JOIN LATERAL (
                     THEN i.total_amount - i.amount_paid ELSE 0 END) AS overdue_amount
     FROM billing.invoices i
     WHERE i.customer_id = c.customer_id AND i.status <> 'void'
-) AS inv
+) AS inv ON TRUE
 LEFT JOIN LATERAL (
     SELECT SUM(r.amount) AS total_refunded
     FROM billing.refunds r WHERE r.customer_id = c.customer_id
-) AS ref
+) AS ref ON TRUE
 LEFT JOIN LATERAL (
     SELECT COUNT(*) AS total_tickets,
            SUM(CASE WHEN tk.status IN ('open','pending','escalated') THEN 1 ELSE 0 END) AS open_tickets
     FROM support.tickets tk WHERE tk.customer_id = c.customer_id
-) AS tkt
+) AS tkt ON TRUE
 LEFT JOIN LATERAL (
     SELECT COUNT(*) AS sla_breaches
     FROM support.sla_breaches b WHERE b.customer_id = c.customer_id
-) AS brc
+) AS brc ON TRUE
 LEFT JOIN LATERAL (
     SELECT AVG(CAST(u.active_users AS DECIMAL(10,2))) AS avg_active_users_30d
     FROM core.usage_daily u
     WHERE u.customer_id = c.customer_id
       AND u.usage_date >= ((CAST((NOW() AT TIME ZONE 'utc') AS date)) + INTERVAL '-30 day')
-) AS usg
+) AS usg ON TRUE
 LEFT JOIN LATERAL (
     SELECT h.health_score, h.risk_band, h.churn_risk_pct
     FROM analytics.customer_health h
     WHERE h.customer_id = c.customer_id
     ORDER BY h.snapshot_date DESC
     LIMIT 1
-) AS hlt;
+) AS hlt ON TRUE;
 
 /* ---------------------------------------------------------------------------
    analytics.vw_customer_risk
