@@ -29,9 +29,14 @@ permissions:
 
 env:
   PYTHON_PROJECT: local-enterprise-copilot
-  # The expression that selects the deterministic suite. Verified locally to
-  # give exactly 351 passed / 54 deselected; the 54 need SQL Server, Ollama or
-  # a live Qdrant and are correctly excluded rather than silently passing.
+  # The expression that selects the deterministic suite. On a CLEAN install it
+  # gives 350 passed, 1 skipped, 54 deselected. The 54 need SQL Server, Ollama
+  # or a live Qdrant; the 1 skip is a vanna test guarding itself, since vanna
+  # is deliberately not a production dependency.
+  #
+  # A developer machine with vanna installed reports 351 passed and no skip.
+  # The clean number is the honest one, and the difference is exactly why this
+  # pipeline installs from scratch.
   DETERMINISTIC: "not integration and not slow and not requires_ollama and not requires_sqlserver"
 
 jobs:

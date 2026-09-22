@@ -91,6 +91,13 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
     "mypy>=1.13",
+    # tests/test_cloud_api_auth.py covers the backend's authentication and
+    # identity-to-persona mapping and imports fastapi. It lived only in
+    # cloud/api/requirements.txt, so on a clean install that module failed to
+    # COLLECT - meaning the security tests silently did not run at all, while
+    # a machine that happened to have fastapi reported them as passing.
+    # Declared here so the suite is self-contained.
+    "fastapi>=0.115,<1",
     "jupyter>=1.1",
     "nbformat>=5.10",
     "matplotlib>=3.9",
@@ -144,6 +151,13 @@ module = [
     "sentence_transformers",
     "sentence_transformers.*",
     "rank_bm25",
+    # Vanna is deliberately absent from the production dependency set (the
+    # adapter targets the archived `vanna.legacy` API and is experimental
+    # only), so a clean install has nothing for mypy to resolve. Local runs
+    # passed solely because a developer happened to have it installed - which
+    # is the machine-specific release gate this block exists to prevent.
+    "vanna",
+    "vanna.*",
 ]
 # These runtime/optional libraries do not all publish compatible type metadata
 # across every supported Python version. Keep our code checked while treating
