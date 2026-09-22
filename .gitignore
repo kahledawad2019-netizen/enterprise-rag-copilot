@@ -1,0 +1,39 @@
+# ---- Secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+secrets/
+.secrets/
+
+# ---- Virtual environment ----
+.venv/
+venv/
+env/
+
+# ---- Vector store / local data (root project only; the subproject
+#      local-enterprise-copilot/ has its own .gitignore) ----
+/data/
+/chroma/
+*.sqlite3
+*.duckdb
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# ---- Logs ----
+*.log
+/logs/

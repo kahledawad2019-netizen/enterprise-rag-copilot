@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# RAG System — Vanna AI + SQL Server + local Ollama (llama3.1)
+# Python 3.13  |  install:  .venv\Scripts\python -m pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+
+# --- Core RAG framework ----------------------------------------------------
+# chromadb  -> local vector store for the training corpus (DDL / docs / SQL)
+# ollama    -> local LLM client (llama3.1), no data leaves the machine
+vanna[chromadb,ollama]>=0.7.9
+
+# --- SQL Server connectivity ----------------------------------------------
+pyodbc>=5.2.0
+SQLAlchemy>=2.0.36
+
+# --- Secure configuration & secrets ---------------------------------------
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+keyring>=25.5.0            # optional: pull secrets from Windows Credential Manager
+
+# --- Data / visualisation --------------------------------------------------
+pandas>=2.2.0
+plotly>=5.24.0
+kaleido>=0.2.1
+
+# --- UI --------------------------------------------------------------------
+streamlit>=1.40.0
+
+# --- Embeddings -------------------------------------------------------------
+# ChromaDB ships a local ONNX MiniLM embedder by default (offline, ~80 MB,
+# no API key, no torch). Uncomment below only if you want a different/larger
+# SentenceTransformer model -- it pulls in PyTorch (~2.5 GB).
+# sentence-transformers>=3.3.0

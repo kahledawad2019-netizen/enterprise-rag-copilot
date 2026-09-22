@@ -1,0 +1,122 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enterprise-copilot"
+version = "0.1.0"
+description = "Local Enterprise Intelligence Copilot: document RAG + Text-to-SQL over SQL Server, running entirely on local models."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+
+# ---------------------------------------------------------------------------
+# Version strategy
+#
+# Lower bounds are the versions this project was developed and tested against.
+# Upper bounds are set only where an ecosystem has a history of breaking
+# changes (vanna, pydantic, sqlglot, qdrant-client). scripts/freeze.ps1 writes
+# the exact resolved set to requirements.lock.txt for reproducible installs.
+# ---------------------------------------------------------------------------
+dependencies = [
+    # --- configuration & typed models ---
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "python-dotenv>=1.0",
+    "keyring>=25.5",
+
+    # --- SQL Server ---
+    "pyodbc>=5.2",
+    "SQLAlchemy>=2.0.36,<3",
+    "sqlglot>=25.0,<31",
+
+    # --- vector store & retrieval ---
+    "qdrant-client>=1.12,<2",
+    "rank-bm25>=0.2.2",
+
+    # --- local inference ---
+    "ollama>=0.4",
+
+    # --- document ingestion ---
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    "markdown-it-py>=3.0",
+
+    # --- data & analytics ---
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "plotly>=5.24",
+
+    # --- synthetic data ---
+    "Faker>=30.0",
+
+    # --- UI ---
+    "streamlit>=1.40",
+
+    # --- observability ---
+    "structlog>=24.4",
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+
+[project.optional-dependencies]
+# Cross-encoder reranking. Pulls in PyTorch (~2.5 GB), so it is opt-in.
+# Without it the system still runs: the reranker degrades to a no-op and the
+# fused hybrid ranking is used directly.
+rerank = [
+    "sentence-transformers>=3.3",
+    "torch>=2.4",
+]
+
+# Vanna as the default Text-to-SQL provider. Pinned deliberately: see
+# docs/architecture_decisions/ADR-002-vanna-version.md
+vanna = [
+    "vanna[chromadb,ollama]==2.0.2",
+]
+
+# Local trace UI. Entirely optional; the app runs without it.
+phoenix = [
+    "arize-phoenix>=5.0",
+]
+
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "jupyter>=1.1",
+    "nbformat>=5.10",
+    "matplotlib>=3.9",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs a live SQL Server, Ollama or Qdrant",
+    "slow: takes more than a few seconds",
+    "requires_ollama: needs a running Ollama with the profile models pulled",
+    "requires_sqlserver: needs a reachable SQL Server instance",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["enterprise_copilot"]
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

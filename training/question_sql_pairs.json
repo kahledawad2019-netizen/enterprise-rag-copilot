@@ -1,0 +1,10 @@
+[
+  {
+    "question": "How many orders were placed in each year?",
+    "sql": "SELECT YEAR(order_date) AS order_year, COUNT(*) AS order_count FROM sales.orders GROUP BY YEAR(order_date) ORDER BY order_year;"
+  },
+  {
+    "question": "Which 10 products generated the most revenue?",
+    "sql": "SELECT TOP (10) p.product_name, SUM(oi.quantity * oi.list_price * (1 - oi.discount)) AS revenue FROM sales.order_items oi JOIN production.products p ON p.product_id = oi.product_id GROUP BY p.product_name ORDER BY revenue DESC;"
+  }
+]

@@ -1,0 +1,22 @@
+# Security-relevant Streamlit defaults.
+
+[server]
+# Loopback only. Without this Streamlit listens on 0.0.0.0 and anyone on the
+# LAN can query the database through the UI.
+address = "localhost"
+port = 8501
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[client]
+# Tracebacks can leak schema names, connection details and query fragments.
+showErrorDetails = "none"
+
+[theme]
+base = "light"

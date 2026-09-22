@@ -1,0 +1,22 @@
+# Security-relevant Streamlit defaults for this project.
+
+[server]
+# Bind to the loopback interface only. Without this, Streamlit listens on
+# 0.0.0.0 and anyone on the LAN can query your database through the UI.
+address = "localhost"
+port = 8501
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+# Keep uploads small; this app does not need file uploads.
+maxUploadSize = 5
+
+[browser]
+# Do not send usage statistics anywhere.
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[client]
+# Show errors in the terminal, not in the browser: tracebacks can leak
+# connection details, schema names and query fragments.
+showErrorDetails = "none"

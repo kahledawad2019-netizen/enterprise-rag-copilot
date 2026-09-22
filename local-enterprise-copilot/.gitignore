@@ -1,0 +1,52 @@
+# ---- Secrets ----
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.pfx
+secrets/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+
+# ---- Generated data (reproducible from scripts; keep the repo light) ----
+data/qdrant/
+data/vanna_chroma/
+data/manifests/*.pkl
+data/logs/
+data/traces/
+data/generated/*.csv
+data/generated/*.parquet
+data/manifests/*.json
+!data/manifests/.gitkeep
+
+# ---- Evaluation outputs (the datasets themselves ARE committed) ----
+evals/results/
+evals/baselines/*.local.json
+
+# ---- Models / caches ----
+.cache/
+models/
+*.onnx
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

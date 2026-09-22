@@ -1,0 +1,82 @@
+{
+  "generated_at_utc": "20260918T213808Z",
+  "k": 8,
+  "embedding_model": "qwen3-embedding:0.6b",
+  "index_version": "v1",
+  "reranker": {
+    "reranker": "BAAI/bge-reranker-base",
+    "active": true,
+    "device": "cpu",
+    "load_seconds": 8.41,
+    "pairs_scored": 2880,
+    "seconds_per_pair": 0.0878
+  },
+  "metrics": {
+    "dense": {
+      "strategy": "dense",
+      "k": 8,
+      "queries": 96,
+      "hit_rate": 0.9896,
+      "mrr": 0.8115,
+      "recall@k": 0.9896,
+      "precision@k": 0.2407,
+      "ndcg@k": 0.8563,
+      "filter_accuracy": 1.0,
+      "mean_ms": 120.7,
+      "p95_ms": 58.6
+    },
+    "sparse": {
+      "strategy": "sparse",
+      "k": 8,
+      "queries": 96,
+      "hit_rate": 0.9896,
+      "mrr": 0.8389,
+      "recall@k": 0.9896,
+      "precision@k": 0.2178,
+      "ndcg@k": 0.8775,
+      "filter_accuracy": 1.0,
+      "mean_ms": 7.5,
+      "p95_ms": 11.4
+    },
+    "hybrid": {
+      "strategy": "hybrid",
+      "k": 8,
+      "queries": 96,
+      "hit_rate": 0.9792,
+      "mrr": 0.9062,
+      "recall@k": 0.9792,
+      "precision@k": 0.233,
+      "ndcg@k": 0.9248,
+      "filter_accuracy": 1.0,
+      "mean_ms": 65.3,
+      "p95_ms": 69.0
+    },
+    "reranked": {
+      "strategy": "reranked",
+      "k": 8,
+      "queries": 96,
+      "hit_rate": 1.0,
+      "mrr": 0.93,
+      "recall@k": 1.0,
+      "precision@k": 0.177,
+      "ndcg@k": 0.9476,
+      "filter_accuracy": 1.0,
+      "mean_ms": 2904.4,
+      "p95_ms": 4019.7
+    }
+  },
+  "per_category": {
+    "dense": {
+      "generated": 0.8563474437308011
+    },
+    "sparse": {
+      "generated": 0.8774569920962398
+    },
+    "hybrid": {
+      "generated": 0.9248497762648827
+    },
+    "reranked": {
+      "generated": 0.9476268555538043
+    }
+  }
+}
