@@ -504,7 +504,7 @@ CREATE TABLE IF NOT EXISTS ai.schema_version (
     notes               VARCHAR(400)       NULL
 );
 
-IF NOT EXISTS (SELECT 1 FROM ai.schema_version WHERE schema_version = '1.0.0')
-    INSERT INTO ai.schema_version (schema_version, script_name, notes)
-    VALUES ('1.0.0', '003_create_tables.sql', 'Initial schema: 22 tables across 6 schemas.');
+INSERT INTO ai.schema_version (schema_version, script_name, notes)
+SELECT '1.0.0', '003_create_tables.sql', 'Initial schema: 22 tables across 6 schemas.'
+WHERE NOT EXISTS (SELECT 1 FROM ai.schema_version WHERE schema_version = '1.0.0');
 DO $$ BEGIN RAISE NOTICE '003_create_tables.sql complete.'; END $$;

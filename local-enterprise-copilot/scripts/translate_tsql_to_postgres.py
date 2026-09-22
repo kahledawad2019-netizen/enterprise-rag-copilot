@@ -193,6 +193,43 @@ def convert_object_guards(sql: str) -> str:
     return sql
 
 
+def convert_conditional_insert(sql: str) -> str:
+    """IF NOT EXISTS (<probe>) INSERT INTO t (cols) VALUES (vals);
+
+    -> INSERT INTO t (cols) SELECT vals WHERE NOT EXISTS (<probe>);
+
+    T-SQL guards a seed row with a statement-level IF. PostgreSQL has no
+    statement-level IF outside a procedural block, but INSERT ... SELECT
+    ... WHERE NOT EXISTS expresses the same thing in one statement, keeps it
+    atomic, and stays idempotent on re-run.
+
+    ON CONFLICT DO NOTHING would be shorter but is not equivalent: it needs a
+    unique constraint on exactly the probed columns, and these probes test a
+    value that is not always unique-indexed.
+
+    Found by the CI harness, not by reading: the first run failed with
+    `syntax error at or near "IF"` on the schema_version seed at the end of
+    003, which the OBJECT_ID rule never matched.
+    """
+    pattern = re.compile(
+        r"(?is)\bIF\s+NOT\s+EXISTS\s*(\((?:[^()]|\([^()]*\))*\))\s*"
+        r"INSERT\s+INTO\s+([\w.]+)\s*(\([^)]*\))\s*"
+        r"VALUES\s*(\((?:[^()']|'[^']*')*\))\s*;"
+    )
+
+    def fix(match: re.Match[str]) -> str:
+        probe, table, columns, values = match.groups()
+        # VALUES (a, b, c) -> SELECT a, b, c
+        projection = values.strip()[1:-1].strip()
+        return (
+            f"INSERT INTO {table} {columns}\n"
+            f"SELECT {projection}\n"
+            f"WHERE NOT EXISTS {probe};"
+        )
+
+    return pattern.sub(fix, sql)
+
+
 def convert_print(sql: str) -> str:
     """PRINT 'x' -> a DO block raising a notice, which psql shows the same way."""
     def fix(match: re.Match[str]) -> str:
@@ -217,6 +254,7 @@ def translate(sql: str) -> str:
         convert_boolean_defaults,
         drop_default_constraint_names,
         convert_builtins,
+        convert_conditional_insert,
         convert_print,
         unbracket,
         tidy,
