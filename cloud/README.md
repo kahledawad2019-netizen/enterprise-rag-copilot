@@ -340,6 +340,46 @@ cd cloud/worker && npx wrangler dev
 
 `wrangler dev` listens on 8787, which is where Vite is already pointing.
 
+**Wrangler does not read shell environment variables for `[vars]`.** Exporting
+`BACKEND_URL` before `wrangler dev` is silently ignored and the value from
+`wrangler.toml` is used instead — which means a local run quietly tries to
+reach your production backend. Put local overrides in `cloud/worker/.dev.vars`
+(gitignored):
+
+```ini
+BACKEND_TOKEN=dev-token
+BACKEND_URL=http://localhost:8000
+ALLOWED_ORIGINS=http://localhost:5173
+```
+
+To skip the Worker entirely and drive the backend directly:
+
+```bash
+cd cloud/ui && COPILOT_API=http://127.0.0.1:8000 BACKEND_TOKEN=dev-token npm run dev
+```
+
+### What has been verified locally, and what has not
+
+The Worker was run under `wrangler dev` and exercised:
+
+| Behaviour | Result |
+|---|---|
+| Unknown route | its own 404, never proxied |
+| CORS, allowed origin | `Access-Control-Allow-Origin` + credentials, `Vary: Origin` |
+| CORS, disallowed origin | **no** allow-origin header, so the browser blocks it |
+| Body over 64 KB | 413, before any proxying |
+| Backend unreachable | clean 503, and the backend URL is not leaked |
+| `.dev.vars` bindings | loaded, including the rate limiter |
+
+**The proxy hop itself and Access JWT verification are not verified.**
+`workerd` has no outbound network in the environment this was built in —
+miniflare could not even fetch its own `Request.cf` object — so every
+`fetch()` to the backend failed regardless of the URL, while `curl` to the
+same address returned 200. That is an environment restriction, not a defect,
+but it does mean the first real proxied request will happen on your machine
+and not on this one. Run the table above again after `npx wrangler dev` on
+your side, and `GET /api/health` should return the backend's JSON.
+
 ---
 
 ## Cost
