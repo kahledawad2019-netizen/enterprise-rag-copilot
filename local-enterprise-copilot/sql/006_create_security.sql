@@ -105,66 +105,28 @@ PRINT 'Role copilot_readonly configured.';
 GO
 
 /* ===========================================================================
-   PATH A - SQL login (requires Mixed Mode)
+   PRINCIPAL PROVISIONING
    ---------------------------------------------------------------------------
-   Change the password before running, and store it with
-   `python scripts/set_secret.py` rather than in .env.
+   This file deliberately does NOT create a login with a password literal. A
+   checked-in "temporary" password is still a credential and is commonly left
+   active by mistake. Provision the principal through your secret-management
+   workflow, then add only that user to the role created above.
+
+   Azure SQL example (replace the placeholder interactively; never commit it):
+
+       CREATE USER [copilot_app] WITH PASSWORD = '<generated secret>';
+       ALTER ROLE [copilot_readonly] ADD MEMBER [copilot_app];
+
+   SQL Server Windows-service-account example:
+
+       CREATE LOGIN [MACHINE\copilot_svc] FROM WINDOWS;
+       CREATE USER  [MACHINE\copilot_svc] FOR LOGIN [MACHINE\copilot_svc];
+       ALTER ROLE   [copilot_readonly] ADD MEMBER [MACHINE\copilot_svc];
    =========================================================================== */
-DECLARE @mixed_mode BIT = CASE
-    WHEN CAST(SERVERPROPERTY('IsIntegratedSecurityOnly') AS INT) = 0 THEN 1 ELSE 0 END;
-
-IF @mixed_mode = 1
-BEGIN
-    PRINT 'Mixed Mode is ENABLED - creating the copilot_reader SQL login.';
-
-    IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'copilot_reader')
-        EXEC(N'CREATE LOGIN [copilot_reader]
-                 WITH PASSWORD = N''ChangeMe_Str0ng!2026'',
-                      CHECK_POLICY = ON,
-                      CHECK_EXPIRATION = OFF;');
-
-    IF DATABASE_PRINCIPAL_ID(N'copilot_reader') IS NULL
-        EXEC(N'CREATE USER [copilot_reader] FOR LOGIN [copilot_reader];');
-
-    EXEC(N'ALTER ROLE [copilot_readonly] ADD MEMBER [copilot_reader];');
-
-    PRINT '  -> Login copilot_reader created and added to copilot_readonly.';
-    PRINT '  -> CHANGE THE PASSWORD, then set in .env:';
-    PRINT '       MSSQL_AUTH_MODE=sql';
-    PRINT '       MSSQL_USERNAME=copilot_reader';
-    PRINT '       MSSQL_PASSWORD=        (blank; use scripts/set_secret.py)';
-END
-ELSE
-BEGIN
-    PRINT '';
-    PRINT '*** Mixed Mode is DISABLED on this instance. ***';
-    PRINT '    The copilot_reader SQL login was NOT created.';
-    PRINT '    The copilot_readonly ROLE exists and is ready for a member.';
-    PRINT '';
-    PRINT '    Choose one:';
-    PRINT '      Path A: enable Mixed Mode (SSMS -> Properties -> Security),';
-    PRINT '              restart MSSQL$SQLEXPRESS, then re-run this script.';
-    PRINT '      Path B: map a dedicated Windows account (see below).';
-    PRINT '';
-    PRINT '    Until then the app connects as your own login. If that login is';
-    PRINT '    sysadmin, ONLY the application SQL guard protects the data.';
-END
+PRINT '';
+PRINT 'Provision the application principal outside this file, then add it to copilot_readonly.';
+PRINT 'Never add the application principal to db_owner, db_datareader, or sysadmin.';
 GO
-
-/* ===========================================================================
-   PATH B - dedicated Windows account (no server change needed)
-   ---------------------------------------------------------------------------
-   Create a local Windows user, then uncomment and adjust:
-
-       net user copilot_svc <StrongPassword> /add
-       net localgroup Users copilot_svc /add
-
-   CREATE LOGIN [MACHINE\copilot_svc] FROM WINDOWS;
-   CREATE USER  [MACHINE\copilot_svc] FOR LOGIN [MACHINE\copilot_svc];
-   ALTER ROLE   [copilot_readonly] ADD MEMBER [MACHINE\copilot_svc];
-
-   Then run Streamlit as that user, keeping MSSQL_AUTH_MODE=windows.
-   =========================================================================== */
 
 /* ===========================================================================
    Verification - run these AS the copilot principal, not as yourself.

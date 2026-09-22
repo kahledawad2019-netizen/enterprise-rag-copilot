@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..config import Settings, get_settings
 
@@ -71,11 +71,9 @@ class OllamaEmbedder:
         self.stats = EmbeddingStats()
         self._dimension: int | None = None
 
-        import ollama
+        from ..llm import build_embedding_client
 
-        self._client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        self._client = build_embedding_client(self.settings)
 
     # -- dimension ---------------------------------------------------------
     @property
@@ -106,7 +104,7 @@ class OllamaEmbedder:
         batch_size = self.settings.profile.embedding_batch_size
         vectors: list[list[float]] = []
         for start in range(0, len(texts), batch_size):
-            vectors.extend(self._embed_once(texts[start:start + batch_size]))
+            vectors.extend(self._embed_once(texts[start : start + batch_size]))
         return vectors
 
     def _embed_once(self, batch: list[str]) -> list[list[float]]:
@@ -140,7 +138,7 @@ class OllamaEmbedder:
         return {
             "model": self.model,
             "host": self.settings.ollama.host,
-            "dimension": self._dimension,   # None until first use, deliberately
+            "dimension": self._dimension,  # None until first use, deliberately
             "batch_size": self.settings.profile.embedding_batch_size,
             "calls": self.stats.calls,
             "texts": self.stats.texts,

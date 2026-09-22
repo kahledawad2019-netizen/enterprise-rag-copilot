@@ -69,10 +69,12 @@ class RetrievalFilter:
             # "all" documents are visible to every tenant; tenant-specific ones
             # only to their own tenant.
             must.append(
-                Filter(should=[
-                    FieldCondition(key="tenant", match=MatchValue(value="all")),
-                    FieldCondition(key="tenant", match=MatchValue(value=self.tenant)),
-                ])
+                Filter(
+                    should=[
+                        FieldCondition(key="tenant", match=MatchValue(value="all")),
+                        FieldCondition(key="tenant", match=MatchValue(value=self.tenant)),
+                    ]
+                )
             )
         if self.access_groups:
             must.append(FieldCondition(key="access_group", match=MatchAny(any=self.access_groups)))
@@ -138,8 +140,7 @@ class QdrantVectorStore:
                 else f"Is Qdrant running at {config.url}?"
             )
             raise VectorStoreError(
-                f"Cannot open Qdrant in {config.mode} mode: "
-                f"{type(exc).__name__}: {exc}. {hint}"
+                f"Cannot open Qdrant in {config.mode} mode: {type(exc).__name__}: {exc}. {hint}"
             ) from exc
 
     def close(self) -> None:
@@ -167,7 +168,13 @@ class QdrantVectorStore:
 
         if exists:
             info = self.client.get_collection(self.collection)
-            existing_dim = info.config.params.vectors.size
+            vectors_config = info.config.params.vectors
+            existing_dim = getattr(vectors_config, "size", None)
+            if existing_dim is None:
+                raise VectorStoreError(
+                    f"Collection {self.collection!r} uses a named or unknown vector layout; "
+                    "this application requires one unnamed dense vector."
+                )
             if existing_dim != dimension:
                 raise VectorStoreError(
                     f"Collection {self.collection!r} was built with dimension "
@@ -220,7 +227,7 @@ class QdrantVectorStore:
             for chunk, vector in zip(chunks, vectors, strict=True)
         ]
         for start in range(0, len(points), 128):
-            self.client.upsert(collection_name=self.collection, points=points[start:start + 128])
+            self.client.upsert(collection_name=self.collection, points=points[start : start + 128])
         return len(points)
 
     def delete_document(self, doc_id: str) -> None:
@@ -267,17 +274,20 @@ class QdrantVectorStore:
                 with_payload=True,
             )
         except Exception as exc:
-            raise VectorStoreError(
-                f"Qdrant search failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise VectorStoreError(f"Qdrant search failed: {type(exc).__name__}: {exc}") from exc
 
         results: list[ScoredChunk] = []
         for rank, point in enumerate(response.points, start=1):
             chunk = _chunk_from_payload(point.payload or {})
-            results.append(ScoredChunk(
-                chunk=chunk, score=float(point.score), method=RetrievalMethod.DENSE,
-                dense_score=float(point.score), dense_rank=rank,
-            ))
+            results.append(
+                ScoredChunk(
+                    chunk=chunk,
+                    score=float(point.score),
+                    method=RetrievalMethod.DENSE,
+                    dense_score=float(point.score),
+                    dense_rank=rank,
+                )
+            )
         return results
 
     def get_chunk(self, chunk_id: str) -> Chunk | None:
@@ -295,8 +305,11 @@ class QdrantVectorStore:
         offset = None
         while True:
             points, offset = self.client.scroll(
-                collection_name=self.collection, limit=256,
-                offset=offset, with_payload=True, with_vectors=False,
+                collection_name=self.collection,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
             )
             chunks.extend(_chunk_from_payload(p.payload or {}) for p in points)
             if offset is None:

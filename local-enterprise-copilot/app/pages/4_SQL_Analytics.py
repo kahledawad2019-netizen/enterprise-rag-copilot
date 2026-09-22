@@ -14,9 +14,10 @@ for _candidate in (ROOT / "src", ROOT / "app"):
 
 st.set_page_config(page_title="SQL Analytics", page_icon="::", layout="wide")
 
-from _shared import sidebar  # noqa: E402
-
-from _shared import USERS, sidebar  # noqa: E402
+from _shared import (  # noqa: E402
+    USERS,
+    sidebar,
+)
 
 from enterprise_copilot.database.read_only_runner import (  # noqa: E402
     QueryBlockedError,
@@ -41,20 +42,22 @@ ATTACKS = {
 
 def main() -> None:
     user_name, _ = sidebar("sql")
-    tenant_code, tenant_id, groups = USERS[user_name]
+    _tenant_code, tenant_id, _groups = USERS[user_name]
 
     st.title("SQL Analytics")
-    st.caption("The guard is layer 1. The read-only database principal is layer 2. "
-               "Neither is sufficient alone.")
-
-    tab_guard, tab_run, tab_audit = st.tabs(
-        ["Safety guard", "Run a query", "Audit trail"]
+    st.caption(
+        "The guard is layer 1. The read-only database principal is layer 2. "
+        "Neither is sufficient alone."
     )
+
+    tab_guard, tab_run, tab_audit = st.tabs(["Safety guard", "Run a query", "Audit trail"])
 
     with tab_guard:
         st.subheader("Try to get something past the guard")
-        st.caption("Queries are parsed with sqlglot into a syntax tree. A comment "
-                   "cannot hide a node, and an alternative spelling parses the same.")
+        st.caption(
+            "Queries are parsed with sqlglot into a syntax tree. A comment "
+            "cannot hide a node, and an alternative spelling parses the same."
+        )
 
         choice = st.selectbox("Attack", list(ATTACKS))
         sql = st.text_area("SQL", value=ATTACKS[choice], height=110)
@@ -72,29 +75,35 @@ def main() -> None:
                     st.markdown(f"- **{violation.value}** — {detail}")
             for warning in result.warnings:
                 st.warning(warning)
-            st.json({
-                "tables": result.tables,
-                "schemas": result.schemas,
-                "joins": result.join_count,
-                "uses_analytics_view": result.uses_analytics_view,
-            })
+            st.json(
+                {
+                    "tables": result.tables,
+                    "schemas": result.schemas,
+                    "joins": result.join_count,
+                    "uses_analytics_view": result.uses_analytics_view,
+                }
+            )
 
     with tab_run:
         st.subheader("Run a read-only query")
-        st.caption(f"Executed as tenant {tenant_id}. Writes are impossible; the "
-                   f"guard validates before anything reaches the server.")
+        st.caption(
+            f"Executed as tenant {tenant_id}. Writes are impossible; the "
+            f"guard validates before anything reaches the server."
+        )
         sql = st.text_area(
             "T-SQL",
             value="SELECT TOP 10 customer_name, segment, current_arr, sla_breaches\n"
-                  "FROM analytics.vw_customer_360\n"
-                  f"WHERE tenant_id = {tenant_id}\n"
-                  "ORDER BY current_arr DESC",
+            "FROM analytics.vw_customer_360\n"
+            f"WHERE tenant_id = {tenant_id}\n"
+            "ORDER BY current_arr DESC",
             height=140,
         )
         if st.button("Execute"):
             try:
                 result = ReadOnlyRunner().run(
-                    sql, tenant_id=tenant_id, app_user=user_name,
+                    sql,
+                    tenant_id=tenant_id,
+                    app_user=user_name,
                     question="manual query from the UI",
                 )
             except QueryBlockedError as exc:
@@ -111,8 +120,10 @@ def main() -> None:
 
     with tab_audit:
         st.subheader("Every attempt is recorded")
-        st.caption("Written BEFORE execution, so a query that hangs or crashes still "
-                   "leaves a record. The AI cannot read this table.")
+        st.caption(
+            "Written BEFORE execution, so a query that hangs or crashes still "
+            "leaves a record. The AI cannot read this table."
+        )
         try:
             from enterprise_copilot.database.connection import raw_connection
 
@@ -123,12 +134,18 @@ def main() -> None:
                            block_reason, row_count, duration_ms
                     FROM ai.audit_events ORDER BY audit_id DESC
                 """)
-                rows = [{
-                    "when": str(r[0])[:19], "user": r[1], "route": r[2],
-                    "allowed": bool(r[3]) if r[3] is not None else None,
-                    "blocked_because": (r[4] or "")[:70],
-                    "rows": r[5], "ms": r[6],
-                } for r in cursor.fetchall()]
+                rows = [
+                    {
+                        "when": str(r[0])[:19],
+                        "user": r[1],
+                        "route": r[2],
+                        "allowed": bool(r[3]) if r[3] is not None else None,
+                        "blocked_because": (r[4] or "")[:70],
+                        "rows": r[5],
+                        "ms": r[6],
+                    }
+                    for r in cursor.fetchall()
+                ]
             import pandas as pd
 
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

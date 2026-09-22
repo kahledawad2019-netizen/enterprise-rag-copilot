@@ -152,6 +152,11 @@ def format_evidence_block(evidence_items: list) -> str:
 
 
 __all__ = [
-    "ANSWER_TEMPLATE", "CLARIFICATION_TEMPLATE", "NO_EVIDENCE_TEMPLATE",
-    "PROMPT_VERSION", "REFUSAL_TEMPLATE", "SYSTEM_PROMPT", "format_evidence_block",
+    "ANSWER_TEMPLATE",
+    "CLARIFICATION_TEMPLATE",
+    "NO_EVIDENCE_TEMPLATE",
+    "PROMPT_VERSION",
+    "REFUSAL_TEMPLATE",
+    "SYSTEM_PROMPT",
+    "format_evidence_block",
 ]

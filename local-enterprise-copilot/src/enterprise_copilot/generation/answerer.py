@@ -57,11 +57,9 @@ class GenerationError(RuntimeError):
 class Answerer:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        import ollama
+        from ..llm import build_chat_client
 
-        self._client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        self._client = build_chat_client(self.settings)
 
     # -- evidence ----------------------------------------------------------
     def build_package(
@@ -156,19 +154,19 @@ class Answerer:
                     yield content
         except Exception as exc:
             raise GenerationError(
-                f"Streaming failed with {self.settings.chat_model!r}: "
-                f"{type(exc).__name__}: {exc}"
+                f"Streaming failed with {self.settings.chat_model!r}: {type(exc).__name__}: {exc}"
             ) from exc
 
     # -- special responses -------------------------------------------------
     def clarify(self, question: str, reason: str) -> Answer:
         """Ask one clarifying question instead of guessing."""
-        text, *_ = self._generate(
-            CLARIFICATION_TEMPLATE.format(question=question, reason=reason)
-        )
+        text, *_ = self._generate(CLARIFICATION_TEMPLATE.format(question=question, reason=reason))
         return Answer(
-            question=question, text=text, status=AnswerStatus.CLARIFICATION_NEEDED,
-            model=self.settings.chat_model, prompt_version=PROMPT_VERSION,
+            question=question,
+            text=text,
+            status=AnswerStatus.CLARIFICATION_NEEDED,
+            model=self.settings.chat_model,
+            prompt_version=PROMPT_VERSION,
         )
 
     def refuse(self, question: str, reason: str) -> Answer:
@@ -178,12 +176,13 @@ class Answerer:
         the *decision* to refuse is made by the router and the SQL guard, never
         by the model.
         """
-        text, *_ = self._generate(
-            REFUSAL_TEMPLATE.format(question=question, reason=reason)
-        )
+        text, *_ = self._generate(REFUSAL_TEMPLATE.format(question=question, reason=reason))
         return Answer(
-            question=question, text=text, status=AnswerStatus.REFUSED,
-            model=self.settings.chat_model, prompt_version=PROMPT_VERSION,
+            question=question,
+            text=text,
+            status=AnswerStatus.REFUSED,
+            model=self.settings.chat_model,
+            prompt_version=PROMPT_VERSION,
             warnings=[f"refused: {reason}"],
         )
 
@@ -230,13 +229,11 @@ def _build_notes(package: EvidencePackage) -> str:
     sections: list[str] = []
     if package.conflicts:
         sections.append(
-            "NOTE ON CONFLICTING SOURCES:\n"
-            + "\n".join(f"- {c}" for c in package.conflicts)
+            "NOTE ON CONFLICTING SOURCES:\n" + "\n".join(f"- {c}" for c in package.conflicts)
         )
     if package.notes:
         sections.append(
-            "IMPORTANT CONTEXT ABOUT THIS REQUEST:\n"
-            + "\n".join(f"- {n}" for n in package.notes)
+            "IMPORTANT CONTEXT ABOUT THIS REQUEST:\n" + "\n".join(f"- {n}" for n in package.notes)
         )
     return ("\n" + "\n\n".join(sections) + "\n") if sections else ""
 

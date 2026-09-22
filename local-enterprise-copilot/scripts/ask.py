@@ -21,11 +21,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 USERS = {
-    "admin":      ("all",    ["public", "internal", "finance", "support", "security", "exec"]),
+    "admin": ("all", ["public", "internal", "finance", "support", "security", "exec"]),
     "analyst_na": ("NWC-NA", ["public", "internal", "finance"]),
     "analyst_eu": ("NWC-EU", ["public", "internal", "finance"]),
     "support_na": ("NWC-NA", ["public", "internal", "support"]),
-    "guest":      ("all",    ["public"]),
+    "guest": ("all", ["public"]),
 }
 
 
@@ -33,9 +33,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Ask a question over company documents")
     parser.add_argument("question", nargs="+")
     parser.add_argument("--user", default="admin", choices=sorted(USERS))
-    parser.add_argument("--strategy", default="reranked",
-                        choices=["dense", "sparse", "hybrid", "reranked"])
-    parser.add_argument("--limit", type=int, default=None, help="evidence chunks (default: profile)")
+    parser.add_argument(
+        "--strategy", default="reranked", choices=["dense", "sparse", "hybrid", "reranked"]
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="evidence chunks (default: profile)"
+    )
     parser.add_argument("--show-evidence", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -53,8 +56,9 @@ def main() -> int:
     settings = get_settings()
     question = " ".join(args.question)
     tenant, groups = USERS[args.user]
-    user = UserContext(user_name=args.user, tenant=tenant, access_groups=groups,
-                       is_admin=args.user == "admin")
+    user = UserContext(
+        user_name=args.user, tenant=tenant, access_groups=groups, is_admin=args.user == "admin"
+    )
     trace_id = uuid.uuid4().hex[:12]
 
     print("=" * 88)
@@ -87,8 +91,14 @@ def main() -> int:
             for item in package.all_evidence:
                 print(f"\n  {item.short_reference()}")
                 body = " ".join(item.text.split())
-                print(textwrap.fill(body[:320] + ("..." if len(body) > 320 else ""),
-                                    width=86, initial_indent="    ", subsequent_indent="    "))
+                print(
+                    textwrap.fill(
+                        body[:320] + ("..." if len(body) > 320 else ""),
+                        width=86,
+                        initial_indent="    ",
+                        subsequent_indent="    ",
+                    )
+                )
 
         print("\n" + "-" * 88)
         print("  ANSWER")
@@ -101,18 +111,25 @@ def main() -> int:
 
         print()
         for line in answer.text.split("\n"):
-            print(textwrap.fill(line, width=86, initial_indent="  ", subsequent_indent="  ")
-                  if line.strip() else "")
+            print(
+                textwrap.fill(line, width=86, initial_indent="  ", subsequent_indent="  ")
+                if line.strip()
+                else ""
+            )
 
         print("\n" + "-" * 88)
         print(f"  {format_sources(answer)}")
         print("-" * 88)
         print(f"  status     : {answer.status.value}")
         print(f"  grounded   : {answer.is_grounded}")
-        print(f"  citations  : {len(answer.citations)} "
-              f"({sum(1 for c in answer.citations if c.is_valid)} valid)")
-        print(f"  latency    : retrieval {retrieval_ms:.0f} ms + "
-              f"generation {answer.latency_ms:.0f} ms")
+        print(
+            f"  citations  : {len(answer.citations)} "
+            f"({sum(1 for c in answer.citations if c.is_valid)} valid)"
+        )
+        print(
+            f"  latency    : retrieval {retrieval_ms:.0f} ms + "
+            f"generation {answer.latency_ms:.0f} ms"
+        )
         if answer.tokens_in:
             print(f"  tokens     : {answer.tokens_in} in / {answer.tokens_out} out")
         if answer.warnings:

@@ -43,10 +43,21 @@ log = logging.getLogger(__name__)
 DIALECT = "tsql"
 
 # T-SQL types that arithmetic aggregates accept.
-NUMERIC_TYPES = frozenset({
-    "int", "bigint", "smallint", "tinyint", "decimal", "numeric",
-    "float", "real", "money", "smallmoney", "bit",
-})
+NUMERIC_TYPES = frozenset(
+    {
+        "int",
+        "bigint",
+        "smallint",
+        "tinyint",
+        "decimal",
+        "numeric",
+        "float",
+        "real",
+        "money",
+        "smallmoney",
+        "bit",
+    }
+)
 
 # Aggregates requiring a numeric argument. COUNT is excluded on purpose:
 # counting a varchar column is perfectly valid.
@@ -95,7 +106,9 @@ def check_aggregate_types(
     try:
         statement = sqlglot.parse_one(sql, read=DIALECT)
     except Exception:
-        return []   # the guard reports parse failures; not this module's job
+        return []  # the guard reports parse failures; not this module's job
+    if not isinstance(statement, exp.Expression):
+        return []
 
     referenced = _referenced_tables(statement)
     sources = list(context.tables)
@@ -120,11 +133,15 @@ def check_aggregate_types(
                 # Suggest columns that exist in THESE tables. A generic
                 # suggestion list caused the repair to invent `amount`, which
                 # lives in billing.payments, not billing.invoices.
-                numeric = sorted({
-                    c["name"] for t in in_query for c in t.columns
-                    if c["type"].split("(")[0].strip().lower() in NUMERIC_TYPES
-                    and not c["name"].lower().endswith("_id")
-                })[:6]
+                numeric = sorted(
+                    {
+                        c["name"]
+                        for t in in_query
+                        for c in t.columns
+                        if c["type"].split("(")[0].strip().lower() in NUMERIC_TYPES
+                        and not c["name"].lower().endswith("_id")
+                    }
+                )[:6]
                 options = ", ".join(numeric) if numeric else "a numeric column"
                 problems.append(
                     f"{aggregate_type.__name__.upper()}({column.name}) is invalid: "
@@ -156,6 +173,8 @@ def check_columns_exist(
         statement = sqlglot.parse_one(sql, read=DIALECT)
     except Exception:
         return []
+    if not isinstance(statement, exp.Expression):
+        return []
 
     # Resolve every referenced table against the offered set first, then the
     # full catalog. Only checking the offered subset let a hallucinated column
@@ -166,7 +185,7 @@ def check_columns_exist(
 
     resolved = [by_name[name] for name in referenced if name in by_name]
     if len(resolved) != len(referenced):
-        return []   # a table we know nothing about; say nothing rather than guess
+        return []  # a table we know nothing about; say nothing rather than guess
 
     known: set[str] = set()
     for table in resolved:
@@ -197,6 +216,9 @@ def validate_against_schema(
 
 
 __all__ = [
-    "NUMERIC_AGGREGATES", "NUMERIC_TYPES", "check_aggregate_types",
-    "check_columns_exist", "validate_against_schema",
+    "NUMERIC_AGGREGATES",
+    "NUMERIC_TYPES",
+    "check_aggregate_types",
+    "check_columns_exist",
+    "validate_against_schema",
 ]

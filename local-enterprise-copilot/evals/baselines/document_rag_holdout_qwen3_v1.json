@@ -1,0 +1,27 @@
+{
+  "baseline_id": "document-rag-holdout-qwen3-v1-20260919",
+  "generated_at_utc": "2026-09-19T10:58:13Z",
+  "source_artifact": "rigorous_document_rag_holdout_20260919T105813Z.json",
+  "eval_file": "document_rag_holdout.jsonl",
+  "cases": 96,
+  "k": 8,
+  "bootstrap_resamples": 10000,
+  "evaluated_embedding_provider": "ollama",
+  "evaluated_embedding_model": "qwen3-embedding:0.6b",
+  "evaluated_index_version": "v1",
+  "strategies": [
+    {"name": "dense", "ndcg": 0.8563474437, "ci": [0.8086560625, 0.9001722333], "mrr": 0.8114583333, "recall": 0.9895833333, "median_ms": 48.6081},
+    {"name": "sparse", "ndcg": 0.8774569921, "ci": [0.8333473440, 0.9175931209], "mrr": 0.8388888889, "recall": 0.9895833333, "median_ms": 4.4322},
+    {"name": "hybrid", "ndcg": 0.9248497763, "ci": [0.8818192580, 0.9613081096], "mrr": 0.90625, "recall": 0.9791666667, "median_ms": 53.5230},
+    {"name": "reranked", "ndcg": 0.9462630040, "ci": [0.9135687656, 0.9742054064], "mrr": 0.9282986111, "recall": 1.0, "median_ms": 1453.7665}
+  ],
+  "comparisons": [
+    {"pair": "hybrid vs dense", "delta": 0.0685023325, "ci": [0.0288974473, 0.1097816511], "p": 0.0002, "significant": true},
+    {"pair": "reranked vs dense", "delta": 0.0899155602, "ci": [0.0551997831, 0.1284086195], "p": 0.0, "significant": true},
+    {"pair": "hybrid vs sparse", "delta": 0.0473927842, "ci": [0.0098176723, 0.0850724721], "p": 0.0136, "significant": true},
+    {"pair": "reranked vs sparse", "delta": 0.0688060119, "ci": [0.0330270597, 0.1061340507], "p": 0.0006, "significant": true},
+    {"pair": "sparse vs dense", "delta": 0.0211095484, "ci": [-0.0331772400, 0.0774604768], "p": 0.4476, "significant": false},
+    {"pair": "reranked vs hybrid", "delta": 0.0214132277, "ci": [-0.0127120618, 0.0563654846], "p": 0.2256, "significant": false}
+  ],
+  "headline": "Hybrid retrieval is a statistically significant improvement over dense retrieval. Reranking is not statistically distinguishable from hybrid on this held-out set and has substantially higher median latency."
+}

@@ -21,8 +21,14 @@ class TestProfiles:
         assert set(PROFILES) == {ProfileName.LITE, ProfileName.STANDARD, ProfileName.HIGH}
 
     def test_profiles_are_ordered_by_cost(self) -> None:
-        assert PROFILES[ProfileName.LITE].approx_vram_gb < PROFILES[ProfileName.STANDARD].approx_vram_gb
-        assert PROFILES[ProfileName.STANDARD].approx_vram_gb < PROFILES[ProfileName.HIGH].approx_vram_gb
+        assert (
+            PROFILES[ProfileName.LITE].approx_vram_gb
+            < PROFILES[ProfileName.STANDARD].approx_vram_gb
+        )
+        assert (
+            PROFILES[ProfileName.STANDARD].approx_vram_gb
+            < PROFILES[ProfileName.HIGH].approx_vram_gb
+        )
 
     def test_lite_profile_has_no_reranker(self) -> None:
         """Lite targets CPU-only machines, where a cross-encoder is too slow."""
@@ -55,8 +61,10 @@ class TestProfiles:
 class TestSecretHandling:
     def _sql_settings(self) -> DatabaseSettings:
         return DatabaseSettings(
-            auth_mode="sql", username="copilot_reader",
-            password=SecretStr("SuperSecret123!"), server="testhost",
+            auth_mode="sql",
+            username="copilot_reader",
+            password=SecretStr("SuperSecret123!"),
+            server="testhost",
             database="TestDb",
         )
 

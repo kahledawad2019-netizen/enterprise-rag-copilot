@@ -1,0 +1,70 @@
+# Backend container dependencies.
+#
+# This is deliberately NOT the project's requirements.lock.txt. That file pins
+# 225 packages including streamlit, jupyter, matplotlib and the PyTorch
+# reranker - a ~3 GB image to serve a JSON API that uses none of them.
+#
+# What is excluded and why:
+#   streamlit, jupyter, matplotlib   the container serves JSON, not a UI
+#   torch, sentence-transformers     the cross-encoder reranker. The
+#                                    independent evaluation found reranking
+#                                    is NOT statistically distinguishable
+#                                    from hybrid (+0.023 NDCG, CI [-0.013,
+#                                    +0.059], p=0.217) at 36x the latency.
+#                                    Paying 2.5 GB and a cold start for that
+#                                    is not a trade worth making in a
+#                                    container. The reranker degrades to a
+#                                    no-op; hybrid ranking is used directly.
+#
+# The database stays SQL Server, deployed as Azure SQL on its free offer
+# (100,000 vCore-seconds and 32 GB per month, for the lifetime of the
+# subscription). That keeps 2,198 lines of T-SQL, the sqlglot guard's `tsql`
+# dialect, the tenant-isolation rules and the published evaluation numbers
+# exactly as they are and as they were verified. Translating them to Postgres
+# would have put all of that back in question for no functional gain.
+
+# --- web layer ---
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+
+# --- configuration & typed models ---
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+python-dotenv>=1.0
+requests>=2.32,<3
+
+# --- database ---
+# SQL Server via ODBC. pyodbc is a thin wrapper over the driver, so the image
+# must also install msodbcsql18 - see the Dockerfile.
+pyodbc>=5.2
+SQLAlchemy>=2.0.36,<3
+sqlglot>=25.0,<31
+
+# --- vector store & retrieval ---
+qdrant-client>=1.12,<2
+rank-bm25>=0.2.2
+
+# --- inference ---
+ollama>=0.4
+
+# --- document ingestion ---
+pypdf>=5.0
+python-docx>=1.1
+markdown-it-py>=3.0
+PyYAML>=6.0
+
+# --- data ---
+pandas>=2.2
+numpy>=1.26
+
+# Vanna is intentionally excluded from the production image. The available
+# cloud client is the archived legacy API and its current premium backend is
+# documented as development/demo software. Keep the adapter experimental;
+# production staging uses the native provider until a vendor smoke test,
+# privacy review and dependency review pass.
+
+# --- observability ---
+structlog>=24.4
+opentelemetry-api>=1.27
+opentelemetry-sdk>=1.27
+opentelemetry-exporter-otlp-proto-http>=1.27

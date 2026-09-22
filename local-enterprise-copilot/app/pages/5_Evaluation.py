@@ -14,9 +14,9 @@ for _candidate in (ROOT / "src", ROOT / "app"):
 
 st.set_page_config(page_title="Evaluation", page_icon="::", layout="wide")
 
-from _shared import sidebar  # noqa: E402
-
 import json  # noqa: E402
+
+from _shared import sidebar  # noqa: E402
 
 
 @st.cache_data
@@ -61,8 +61,10 @@ evidence of generalisation, which is why the held-out set exists.
     """)
 
     st.subheader("The most informative result")
-    st.caption("NDCG split by how much of the question's vocabulary appears in the "
-               "source passage. Low overlap = least leakage = hardest.")
+    st.caption(
+        "NDCG split by how much of the question's vocabulary appears in the "
+        "source passage. Low overlap = least leakage = hardest."
+    )
     st.markdown("""
 | overlap | n | dense | sparse | hybrid | reranked |
 |---|---|---|---|---|---|
@@ -96,15 +98,17 @@ evidence of generalisation, which is why the held-out set exists.
         rows = []
         for payload in results:
             for name, metrics in payload["metrics"].items():
-                rows.append({
-                    "run": payload["generated_at_utc"],
-                    "strategy": name,
-                    "ndcg": metrics["ndcg@k"],
-                    "mrr": metrics["mrr"],
-                    "recall": metrics["recall@k"],
-                    "filter_acc": metrics["filter_accuracy"],
-                    "mean_ms": metrics["mean_ms"],
-                })
+                rows.append(
+                    {
+                        "run": payload["generated_at_utc"],
+                        "strategy": name,
+                        "ndcg": metrics["ndcg@k"],
+                        "mrr": metrics["mrr"],
+                        "recall": metrics["recall@k"],
+                        "filter_acc": metrics["filter_accuracy"],
+                        "mean_ms": metrics["mean_ms"],
+                    }
+                )
         frame = pd.DataFrame(rows)
         st.dataframe(frame, use_container_width=True, hide_index=True)
 
@@ -112,7 +116,11 @@ evidence of generalisation, which is why the held-out set exists.
             import plotly.express as express
 
             figure = express.line(
-                frame, x="run", y="ndcg", color="strategy", markers=True,
+                frame,
+                x="run",
+                y="ndcg",
+                color="strategy",
+                markers=True,
                 title="NDCG@8 across runs",
             )
             st.plotly_chart(figure, use_container_width=True)

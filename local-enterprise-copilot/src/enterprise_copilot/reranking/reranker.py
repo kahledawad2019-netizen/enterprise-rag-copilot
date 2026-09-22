@@ -39,7 +39,9 @@ class Reranker(ABC):
     name: str = "base"
 
     @abstractmethod
-    def rerank(self, query: str, results: list[ScoredChunk], *, limit: int) -> list[ScoredChunk]: ...
+    def rerank(
+        self, query: str, results: list[ScoredChunk], *, limit: int
+    ) -> list[ScoredChunk]: ...
 
     @property
     def is_active(self) -> bool:
@@ -133,8 +135,9 @@ class CrossEncoderReranker(Reranker):
             "device": self.device,
             "load_seconds": round(self._load_seconds, 2),
             "pairs_scored": self.total_pairs,
-            "seconds_per_pair": round(
-                self.total_seconds / self.total_pairs, 4) if self.total_pairs else 0.0,
+            "seconds_per_pair": round(self.total_seconds / self.total_pairs, 4)
+            if self.total_pairs
+            else 0.0,
         }
 
 
@@ -157,9 +160,7 @@ def build_reranker(settings: Settings | None = None) -> Reranker:
     try:
         import sentence_transformers  # noqa: F401
     except ImportError:
-        return NoOpReranker(
-            'sentence-transformers not installed - run: pip install -e ".[rerank]"'
-        )
+        return NoOpReranker('sentence-transformers not installed - run: pip install -e ".[rerank]"')
 
     return CrossEncoderReranker(model_name, device=settings.profile.reranker_device)
 

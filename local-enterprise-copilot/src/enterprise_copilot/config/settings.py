@@ -14,7 +14,6 @@ whose output is never logged. Use `safe_odbc_connection_string()` for display.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -40,7 +39,9 @@ def resolve_path(value: object) -> object:
     empty* Qdrant store instead of opening the real one, and retrieval returns
     nothing with no error. Found when executing the notebook via nbconvert.
     """
-    if value is None or isinstance(value, Path) and value.is_absolute():
+    if value is None or (isinstance(value, Path) and value.is_absolute()):
+        return value
+    if not isinstance(value, (str, Path)):
         return value
     path = Path(value) if not isinstance(value, Path) else value
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
@@ -50,8 +51,11 @@ class DatabaseSettings(BaseSettings):
     """SQL Server connection and access policy."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="MSSQL_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="MSSQL_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     server: str = r".\SQLEXPRESS"
@@ -86,7 +90,7 @@ class DatabaseSettings(BaseSettings):
         return None if isinstance(v, str) and not v.strip() else v
 
     @model_validator(mode="after")
-    def _resolve_password(self) -> "DatabaseSettings":
+    def _resolve_password(self) -> DatabaseSettings:
         if self.auth_mode == "sql" and self.password is None and self.username:
             fetched = _password_from_keyring(self.username)
             if fetched:
@@ -134,8 +138,11 @@ class OllamaSettings(BaseSettings):
     """Local inference runtime. No cloud provider is ever contacted."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="OLLAMA_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="OLLAMA_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     host: str = "http://localhost:11434"
@@ -145,6 +152,168 @@ class OllamaSettings(BaseSettings):
     # Optional overrides. When unset, the active profile decides.
     chat_model: str | None = None
     embedding_model: str | None = None
+
+
+class LLMSettings(BaseSettings):
+    """Where chat generation happens: routing, SQL, and answers.
+
+    The project was built against a local Ollama and that is still the
+    default. `provider="openai"` points it at any OpenAI-compatible endpoint -
+    Groq, OpenRouter, Together, DeepSeek, vLLM, Azure OpenAI - which is what
+    makes a container without a GPU possible at all.
+
+    Switching provider does NOT change any safety property. Generated SQL
+    still goes through SQLGuard and ReadOnlyRunner; a hosted model is exactly
+    as untrusted as a local one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="LLM_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    provider: Literal["ollama", "openai"] = "ollama"
+
+    # OpenAI-compatible endpoint. Groq is https://api.groq.com/openai/v1
+    base_url: str = "https://api.groq.com/openai/v1"
+    api_key: SecretStr | None = None
+
+    # Blank means "use the profile's model", which is right for Ollama and
+    # wrong for a hosted API, where the name is provider-specific.
+    model: str = ""
+
+    timeout_seconds: float = 120.0
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.provider != "ollama"
+
+
+class EmbeddingSettings(BaseSettings):
+    """Where text becomes vectors.
+
+    Kept separate from LLMSettings because the two genuinely come apart:
+    Groq has no embeddings endpoint, and Anthropic has none either. The
+    common deployment is therefore a hosted chat model plus embeddings from
+    somewhere else entirely.
+
+    **Changing `provider` or `model` invalidates the index.** A different
+    model produces different vectors for the same text, so the existing
+    collection becomes meaningless rather than merely stale - and it fails
+    silently, by returning confident nonsense. Bump QDRANT_INDEX_VERSION and
+    re-run scripts/build_index.py --rebuild whenever this section changes.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="EMBEDDING_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    provider: Literal["ollama", "openai", "cloudflare"] = "ollama"
+
+    # --- OpenAI-compatible ---
+    base_url: str = "https://api.openai.com/v1"
+    api_key: SecretStr | None = None
+
+    # --- Cloudflare Workers AI ---
+    # bge-m3 is 1024-dimensional, the same as the local qwen3-embedding the
+    # index was built with, so the collection's vector size does not change.
+    # The vectors still do, so a rebuild is still required.
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: SecretStr | None = None
+
+    # Blank means the profile's model (Ollama). Set explicitly otherwise:
+    #   cloudflare  @cf/baai/bge-m3
+    #   openai      text-embedding-3-small
+    model: str = ""
+
+    timeout_seconds: float = 120.0
+
+    @field_validator("api_key", "cloudflare_api_token", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.provider != "ollama"
+
+
+class VannaCloudSettings(BaseSettings):
+    """Vanna Cloud (ask.vanna.ai) configuration.
+
+    **This is the one component in the system that sends data off the
+    machine.** Read `docs/vanna_cloud.md` before enabling it. In summary:
+
+    * ``mode="hybrid"`` keeps generation local. Vanna Cloud holds the training
+      corpus - DDL, the business glossary and the approved SQL examples - and
+      answers retrieval requests. Questions are sent, because retrieval needs
+      the question. Query *results* never are.
+    * ``mode="cloud"`` additionally sends the assembled prompt to Vanna's
+      hosted model. Nothing about the database rows leaves either way, but the
+      schema and the question both do.
+
+    Unset ``api_key`` disables the provider entirely, which is the default.
+    The project's local Vanna and native providers are unaffected.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="VANNA_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    api_key: SecretStr | None = None
+
+    # The model name as it appears in the Vanna dashboard. Vanna calls a
+    # training corpus a "model", which is confusing next to an LLM: this names
+    # the corpus, not the language model.
+    model: str = "enterprise-copilot"
+
+    endpoint: str = "https://ask.vanna.ai/rpc"
+    mode: Literal["hybrid", "cloud"] = "hybrid"
+
+    # Vanna can be told to feed query results back into the prompt to refine a
+    # follow-up. That would send actual customer rows to a third party, so it
+    # is off, and `docs/security.md` states that it is off.
+    allow_llm_to_see_data: bool = False
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        """`VANNA_API_KEY=` must mean absent, not an empty key.
+
+        The same mistake was found and fixed for MSSQL_PASSWORD in phase 1: an
+        empty SecretStr is truthy enough to pass an `is not None` check and
+        then fails much later, somewhere unhelpful.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_configured(self) -> bool:
+        return self.api_key is not None
 
 
 class VectorStoreSettings(BaseSettings):
@@ -158,8 +327,11 @@ class VectorStoreSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="QDRANT_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="QDRANT_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     mode: Literal["embedded", "server"] = "embedded"
@@ -179,8 +351,11 @@ class RetrievalSettings(BaseSettings):
     """Chunking and retrieval knobs, all tuned against evals/ rather than guessed."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="RETRIEVAL_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="RETRIEVAL_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     chunk_target_tokens: int = 400
@@ -211,8 +386,11 @@ class ObservabilitySettings(BaseSettings):
     """Tracing and logging. The app must run fine when Phoenix is absent."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="OBS_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="OBS_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     enable_tracing: bool = True
@@ -230,15 +408,23 @@ class SecuritySettings(BaseSettings):
     """Guardrails applied to generated SQL and retrieved evidence."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="SECURITY_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="SECURITY_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     # Schemas the generated SQL may read. Everything else is refused.
     allowed_schemas: tuple[str, ...] = ("analytics", "core", "billing", "support")
     # Columns that must never appear in a result set, matched case-insensitively.
     blocked_columns: tuple[str, ...] = (
-        "password_hash", "api_key", "secret", "token", "ssn", "tax_id",
+        "password_hash",
+        "api_key",
+        "secret",
+        "token",
+        "ssn",
+        "tax_id",
     )
     require_sql_approval: bool = False
     enforce_tenant_isolation: bool = True
@@ -275,8 +461,10 @@ class Settings(BaseSettings):
     """Root settings object. Build it with `get_settings()`."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     app_name: str = "Local Enterprise Intelligence Copilot"
@@ -296,11 +484,18 @@ class Settings(BaseSettings):
     manifests_dir: Path = PROJECT_ROOT / "data" / "manifests"
 
     _resolve = field_validator(
-        "project_root", "documents_dir", "generated_dir", "manifests_dir", mode="before",
+        "project_root",
+        "documents_dir",
+        "generated_dir",
+        "manifests_dir",
+        mode="before",
     )(resolve_path)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    vanna_cloud: VannaCloudSettings = Field(default_factory=VannaCloudSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
@@ -313,17 +508,31 @@ class Settings(BaseSettings):
 
     @property
     def chat_model(self) -> str:
-        """Explicit env override wins over the profile default."""
+        """The model name to send, whichever provider is in use.
+
+        Precedence: the LLM section's explicit model, then the Ollama
+        override, then the profile. A hosted provider must name its own model
+        - the profile's `llama3.1:8b` is an Ollama tag and means nothing to
+        Groq - so an unset model on a hosted provider is a configuration
+        error, raised by `build_chat_client` rather than guessed at here.
+        """
+        if self.llm.model:
+            return self.llm.model
         return self.ollama.chat_model or self.profile.chat_model
 
     @property
     def embedding_model(self) -> str:
+        if self.embeddings.model:
+            return self.embeddings.model
         return self.ollama.embedding_model or self.profile.embedding_model
 
     def ensure_directories(self) -> None:
         for path in (
-            self.documents_dir, self.generated_dir, self.manifests_dir,
-            self.observability.log_dir, self.observability.trace_dir,
+            self.documents_dir,
+            self.generated_dir,
+            self.manifests_dir,
+            self.observability.log_dir,
+            self.observability.trace_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         if self.vector_store.mode == "embedded":
@@ -370,7 +579,16 @@ def reset_settings_cache() -> None:
 
 
 __all__ = [
-    "Settings", "DatabaseSettings", "OllamaSettings", "VectorStoreSettings",
-    "RetrievalSettings", "ObservabilitySettings", "SecuritySettings",
-    "get_settings", "reset_settings_cache", "PROJECT_ROOT", "KEYRING_SERVICE",
+    "KEYRING_SERVICE",
+    "PROJECT_ROOT",
+    "DatabaseSettings",
+    "ObservabilitySettings",
+    "OllamaSettings",
+    "RetrievalSettings",
+    "SecuritySettings",
+    "Settings",
+    "VannaCloudSettings",
+    "VectorStoreSettings",
+    "get_settings",
+    "reset_settings_cache",
 ]

@@ -49,7 +49,7 @@ class ChunkingConfig:
     target_tokens: int = 400
     overlap_tokens: int = 60
     min_tokens: int = 50
-    max_tokens: int = 900          # hard ceiling; beyond this we must split
+    max_tokens: int = 900  # hard ceiling; beyond this we must split
     include_breadcrumb: bool = True
     keep_tables_whole: bool = True
 
@@ -83,25 +83,34 @@ class StructureAwareChunker:
             # parent so retrieval can expand a precise hit back to full context.
             parent_id: str | None = None
             if len(pieces) > 1:
-                parent_id = Chunk.make_id(
-                    metadata.doc_id, metadata.version, section.path, -1
+                parent_id = Chunk.make_id(metadata.doc_id, metadata.version, section.path, -1)
+                chunks.append(
+                    self._build(
+                        metadata,
+                        section,
+                        self._decorate(section, section.text),
+                        counter=-1,
+                        index_version=index_version,
+                        parent_id=None,
+                    )
                 )
-                chunks.append(self._build(
-                    metadata, section, self._decorate(section, section.text),
-                    counter=-1, index_version=index_version, parent_id=None,
-                ))
 
             for piece in pieces:
                 chunk = self._build(
-                    metadata, section, self._decorate(section, piece),
-                    counter=counter, index_version=index_version, parent_id=parent_id,
+                    metadata,
+                    section,
+                    self._decorate(section, piece),
+                    counter=counter,
+                    index_version=index_version,
+                    parent_id=parent_id,
                 )
                 if chunk.token_estimate >= self.config.min_tokens or len(pieces) == 1:
                     chunks.append(chunk)
                     counter += 1
                 else:
-                    log.debug("Dropping %d-token fragment in %s",
-                              chunk.token_estimate, section.path)
+                    log.debug(
+                        "Dropping %d-token fragment in %s", chunk.token_estimate, section.path
+                    )
 
         if not chunks:
             log.warning("Document %s produced no chunks", metadata.doc_id)
@@ -169,14 +178,14 @@ class StructureAwareChunker:
             is_table_row = bool(TABLE_ROW.match(line))
 
             if is_table_row and not in_table:
-                flush()                 # a table starts a new block
+                flush()  # a table starts a new block
                 in_table = True
             elif in_table and not is_table_row:
                 if line.strip():
-                    flush()             # the table ended
+                    flush()  # the table ended
                     in_table = False
                 else:
-                    continue            # blank line inside a table: keep going
+                    continue  # blank line inside a table: keep going
 
             # A new numbered clause starts a new block unless we are in a table.
             if not in_table and CLAUSE_START.match(line) and buffer:
@@ -202,7 +211,9 @@ class StructureAwareChunker:
             return self._split_table(lines)
 
         sentences = re.split(r"(?<=[.!?])\s+", block)
-        pieces, current, tokens = [], [], 0
+        pieces: list[str] = []
+        current: list[str] = []
+        tokens = 0
         for sentence in sentences:
             sentence_tokens = estimate_tokens(sentence)
             if tokens + sentence_tokens > self.config.target_tokens and current:
@@ -221,11 +232,17 @@ class StructureAwareChunker:
         `| Enterprise | 15 minutes |` with no indication that the second column
         is the first-response target. With it, the fragment is still readable.
         """
-        header = lines[:2] if len(lines) > 1 and set(lines[1].replace("|", "").strip()) <= {"-", " ", ":"} else lines[:1]
-        body = lines[len(header):]
+        header = (
+            lines[:2]
+            if len(lines) > 1 and set(lines[1].replace("|", "").strip()) <= {"-", " ", ":"}
+            else lines[:1]
+        )
+        body = lines[len(header) :]
 
         header_tokens = estimate_tokens("\n".join(header))
-        pieces, current, tokens = [], [], header_tokens
+        pieces: list[str] = []
+        current: list[str] = []
+        tokens = header_tokens
 
         for row in body:
             row_tokens = estimate_tokens(row)

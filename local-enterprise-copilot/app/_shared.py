@@ -28,11 +28,11 @@ from enterprise_copilot.config import get_settings  # noqa: E402
 # Users the demo can act as. Each has a real tenant and access groups, so the
 # permission model is exercised by switching user rather than described.
 USERS: dict[str, tuple[str, int, list[str]]] = {
-    "admin":      ("all",    1, ["public", "internal", "finance", "support", "security", "exec"]),
+    "admin": ("all", 1, ["public", "internal", "finance", "support", "security", "exec"]),
     "analyst_na": ("NWC-NA", 1, ["public", "internal", "finance"]),
     "analyst_eu": ("NWC-EU", 2, ["public", "internal", "finance"]),
     "support_na": ("NWC-NA", 1, ["public", "internal", "support"]),
-    "guest":      ("all",    1, ["public"]),
+    "guest": ("all", 1, ["public"]),
 }
 
 
@@ -75,7 +75,8 @@ def load_health() -> tuple[dict[str, tuple[bool, str]], dict[str, tuple[bool, st
         models = {m["model"] for m in ollama.Client(settings.ollama.host).list().get("models", [])}
         ok = settings.chat_model in models
         connectivity["Ollama"] = (
-            ok, settings.chat_model if ok else f"{settings.chat_model} not pulled"
+            ok,
+            settings.chat_model if ok else f"{settings.chat_model} not pulled",
         )
     except Exception as exc:
         connectivity["Ollama"] = (False, str(exc)[:60])
@@ -88,7 +89,8 @@ def load_health() -> tuple[dict[str, tuple[bool, str]], dict[str, tuple[bool, st
         posture["Read-only principal"] = (
             not info["is_sysadmin"],
             "connected as sysadmin - can write (see ADR-003)"
-            if info["is_sysadmin"] else "least privilege",
+            if info["is_sysadmin"]
+            else "least privilege",
         )
     except Exception as exc:
         connectivity["SQL Server"] = (False, str(exc)[:60])
@@ -106,7 +108,8 @@ def load_health() -> tuple[dict[str, tuple[bool, str]], dict[str, tuple[bool, st
     posture["TLS certificate"] = (
         not settings.database.trust_server_certificate,
         "TrustServerCertificate=yes (fine locally)"
-        if settings.database.trust_server_certificate else "verified",
+        if settings.database.trust_server_certificate
+        else "verified",
     )
 
     return connectivity, posture
@@ -126,10 +129,12 @@ def sidebar(page_key: str) -> tuple[str, str]:
 
         st.subheader("Acting as")
         user = st.selectbox(
-            "User", sorted(USERS), index=sorted(USERS).index("admin"),
+            "User",
+            sorted(USERS),
+            index=sorted(USERS).index("admin"),
             key=f"{page_key}_user",
             help="Changes tenant and access groups. Try 'guest' to see permission "
-                 "filtering refuse the finance-only pricing policy.",
+            "filtering refuse the finance-only pricing policy.",
         )
         tenant_code, tenant_id, groups = USERS[user]
         st.caption(f"tenant `{tenant_code}` (id {tenant_id})")
@@ -138,10 +143,12 @@ def sidebar(page_key: str) -> tuple[str, str]:
         st.divider()
         st.subheader("Retrieval")
         strategy = st.selectbox(
-            "Strategy", ["reranked", "hybrid", "dense", "sparse"], index=0,
+            "Strategy",
+            ["reranked", "hybrid", "dense", "sparse"],
+            index=0,
             key=f"{page_key}_strategy",
             help="reranked is most accurate; hybrid is ~45x faster with slightly "
-                 "lower NDCG (0.925 vs 0.948 on the held-out set).",
+            "lower NDCG (0.925 vs 0.948 on the held-out set).",
         )
 
         st.divider()

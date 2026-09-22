@@ -77,8 +77,7 @@ the evidence actually supplied.
             "Policy (documents)": "What is the refund policy for enterprise annual plans?",
             "Data (SQL)": "Which five customers have the highest ARR?",
             "Both (multi-source)": (
-                "Show customers with more than three SLA breaches "
-                "and summarise the SLA policy"
+                "Show customers with more than three SLA breaches and summarise the SLA policy"
             ),
             "Refused (destructive)": "Delete all customers from the database",
             "Clarify (ambiguous)": "What is the response time?",

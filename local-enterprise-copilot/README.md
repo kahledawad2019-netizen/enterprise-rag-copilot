@@ -2,8 +2,18 @@
 
 A production-shaped RAG and analytics system that answers questions about a
 company's **policy documents** and its **SQL Server data** — and knows which
-one a question needs. Everything runs locally: no cloud LLM, no data leaving
-the machine.
+one a question needs. In its default configuration everything runs locally:
+no cloud LLM, no data leaving the machine.
+
+> **That default is configurable, and the alternative is not local.** Hosted
+> chat (`LLM_PROVIDER=openai`), hosted embeddings (`EMBEDDING_PROVIDER`) and
+> Vanna Cloud (`TEXT_TO_SQL_PROVIDER=vanna_cloud`) each send prompts, the
+> schema or the training corpus to a third party. Query *results* are never
+> sent under any of them, and no safety property moves — generated SQL still
+> passes the sqlglot guard and the read-only runner either way. What changes
+> is disclosure. See [docs/hosted_models.md](docs/hosted_models.md) and
+> [docs/vanna_cloud.md](docs/vanna_cloud.md); `/health` reports the live
+> posture as a `data_locality` check.
 
 ```
 276 tests passing · 43 data validations · 96 held-out eval questions · NDCG@8 0.946

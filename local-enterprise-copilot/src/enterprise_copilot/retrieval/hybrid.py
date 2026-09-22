@@ -28,8 +28,9 @@ from enum import StrEnum
 from typing import Any
 
 from ..config import Settings, get_settings
-from ..models.documents import Chunk, RetrievalMethod, ScoredChunk
-from ..reranking.policy import RerankDecision, decide as decide_rerank
+from ..models.documents import RetrievalMethod, ScoredChunk
+from ..reranking.policy import RerankDecision
+from ..reranking.policy import decide as decide_rerank
 from ..reranking.reranker import Reranker, build_reranker
 from .embedder import OllamaEmbedder
 from .fusion import (
@@ -100,7 +101,9 @@ class UserContext:
     @classmethod
     def admin(cls) -> UserContext:
         return cls(
-            user_name="admin", tenant="all", is_admin=True,
+            user_name="admin",
+            tenant="all",
+            is_admin=True,
             access_groups=["public", "internal", "finance", "support", "security", "exec"],
         )
 
@@ -133,7 +136,7 @@ class HybridRetriever:
         log.info("No BM25 cache at %s; rebuilding from the vector store", path)
         try:
             index.build(self.store.all_chunks())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Could not build the BM25 index: %s. Sparse search disabled.", exc)
         return index
 
@@ -160,16 +163,25 @@ class HybridRetriever:
         search_text = rewritten_query or query
 
         trace = RetrievalTrace(
-            query=query, rewritten_query=rewritten_query,
-            strategy=strategy.value, filters=filters.describe(),
+            query=query,
+            rewritten_query=rewritten_query,
+            strategy=strategy.value,
+            filters=filters.describe(),
         )
 
-        allowed_ids = self._allowed_chunk_ids(filters) if strategy in (
-            RetrievalStrategy.SPARSE, RetrievalStrategy.HYBRID, RetrievalStrategy.RERANKED
-        ) else None
+        allowed_ids = (
+            self._allowed_chunk_ids(filters)
+            if strategy
+            in (RetrievalStrategy.SPARSE, RetrievalStrategy.HYBRID, RetrievalStrategy.RERANKED)
+            else None
+        )
 
         # --- dense ---
-        if strategy in (RetrievalStrategy.DENSE, RetrievalStrategy.HYBRID, RetrievalStrategy.RERANKED):
+        if strategy in (
+            RetrievalStrategy.DENSE,
+            RetrievalStrategy.HYBRID,
+            RetrievalStrategy.RERANKED,
+        ):
             started = time.perf_counter()
             vector = self.embedder.embed_query(search_text)
             trace.stage_seconds["embed_query"] = time.perf_counter() - started
@@ -181,7 +193,11 @@ class HybridRetriever:
             trace.stage_seconds["dense_search"] = time.perf_counter() - started
 
         # --- sparse ---
-        if strategy in (RetrievalStrategy.SPARSE, RetrievalStrategy.HYBRID, RetrievalStrategy.RERANKED):
+        if strategy in (
+            RetrievalStrategy.SPARSE,
+            RetrievalStrategy.HYBRID,
+            RetrievalStrategy.RERANKED,
+        ):
             started = time.perf_counter()
             trace.sparse_results = self.sparse.search(
                 search_text, limit=profile.sparse_candidates, allowed_chunk_ids=allowed_ids
@@ -209,7 +225,8 @@ class HybridRetriever:
         # --- rerank, but only when it can plausibly change the answer ---
         if strategy is RetrievalStrategy.RERANKED and candidates:
             decision: RerankDecision = decide_rerank(
-                query, candidates,
+                query,
+                candidates,
                 dense=trace.dense_results,
                 sparse=trace.sparse_results,
                 policy=self.settings.retrieval.rerank_policy,
@@ -219,7 +236,7 @@ class HybridRetriever:
             if decision.should_rerank:
                 started = time.perf_counter()
                 candidates = self.reranker.rerank(
-                    query, candidates[:profile.reranker_top_n], limit=max(limit * 2, limit)
+                    query, candidates[: profile.reranker_top_n], limit=max(limit * 2, limit)
                 )
                 trace.stage_seconds["rerank"] = time.perf_counter() - started
                 trace.reranked_results = candidates
@@ -239,7 +256,8 @@ class HybridRetriever:
         # --- parent expansion ---
         expand = (
             self.settings.retrieval.enable_parent_expansion
-            if expand_parents is None else expand_parents
+            if expand_parents is None
+            else expand_parents
         )
         if expand:
             started = time.perf_counter()
@@ -277,7 +295,7 @@ class HybridRetriever:
         """
         try:
             chunks = self.store.all_chunks()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Could not compute the allowed chunk set: %s", exc)
             return None
 

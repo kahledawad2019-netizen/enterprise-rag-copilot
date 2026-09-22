@@ -60,7 +60,7 @@ def run_script(cursor, path: Path, *, echo_prints: bool = True) -> int:
                     cursor.fetchall()
                 if not cursor.nextset():
                     break
-        except Exception as exc:  # noqa: BLE001 - re-raised with context
+        except Exception as exc:
             snippet = "\n".join(batch.splitlines()[:6])
             raise ScriptError(path.name, index, snippet, exc) from exc
 
@@ -83,8 +83,12 @@ def connect(settings, *, database: str):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Apply SQL Server migration scripts")
-    parser.add_argument("--only", help="run just the script whose name starts with this prefix, e.g. 005")
-    parser.add_argument("--validate", action="store_true", help="run 008_validation_queries.sql only")
+    parser.add_argument(
+        "--only", help="run just the script whose name starts with this prefix, e.g. 005"
+    )
+    parser.add_argument(
+        "--validate", action="store_true", help="run 008_validation_queries.sql only"
+    )
     parser.add_argument("--from", dest="start_from", help="start at this prefix and continue")
     args = parser.parse_args()
 
@@ -131,7 +135,7 @@ def main() -> int:
             for line in exc.snippet.splitlines():
                 print(f"       {line}")
             break  # later scripts depend on earlier ones
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures += 1
             print(f"[FAIL] {script.name:32} {type(exc).__name__}: {exc}")
             break

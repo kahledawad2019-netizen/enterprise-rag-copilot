@@ -45,11 +45,15 @@ def main() -> int:
     print("=" * 78)
     print("  Document index")
     print(f"  embedding model : {settings.embedding_model}")
-    print(f"  vector store    : qdrant:{settings.vector_store.mode} "
-          f"({settings.vector_store.collection})")
+    print(
+        f"  vector store    : qdrant:{settings.vector_store.mode} "
+        f"({settings.vector_store.collection})"
+    )
     print(f"  index version   : {settings.vector_store.index_version}")
-    print(f"  chunk target    : {settings.retrieval.chunk_target_tokens} tokens "
-          f"(overlap {settings.retrieval.chunk_overlap_tokens})")
+    print(
+        f"  chunk target    : {settings.retrieval.chunk_target_tokens} tokens "
+        f"(overlap {settings.retrieval.chunk_overlap_tokens})"
+    )
     print("=" * 78)
 
     try:
@@ -57,10 +61,14 @@ def main() -> int:
             ok, problems = pipeline.validate_index()
             if ok:
                 manifest = pipeline.read_manifest()
-                print(f"[ OK ] Index valid: {manifest.chunk_count} chunks from "
-                      f"{manifest.document_count} documents")
-                print(f"       built {manifest.built_at_utc} with "
-                      f"{manifest.embedding_model} (dim {manifest.embedding_dimension})")
+                print(
+                    f"[ OK ] Index valid: {manifest.chunk_count} chunks from "
+                    f"{manifest.document_count} documents"
+                )
+                print(
+                    f"       built {manifest.built_at_utc} with "
+                    f"{manifest.embedding_model} (dim {manifest.embedding_dimension})"
+                )
                 return 0
             print("[FAIL] Index is not usable:")
             for problem in problems:
@@ -91,8 +99,10 @@ def main() -> int:
     print(f"Documents removed {report.documents_deleted}")
     print(f"Duplicates found  {report.duplicates_detected}")
     if report.embedding_seconds:
-        print(f"Embedding time    {report.embedding_seconds:.1f}s "
-              f"({report.chunks_created / report.embedding_seconds:.1f} chunks/s)")
+        print(
+            f"Embedding time    {report.embedding_seconds:.1f}s "
+            f"({report.chunks_created / report.embedding_seconds:.1f} chunks/s)"
+        )
     print(f"Total time        {report.total_seconds:.1f}s")
 
     if report.warnings:
@@ -110,9 +120,10 @@ def main() -> int:
         print("\n--dry-run: nothing written.")
         return 0
 
-    print(f"\nIndex now holds {manifest.chunk_count} chunks "
-          f"from {manifest.document_count} documents.")
-    print("Next: .venv\\Scripts\\python scripts\\search.py \"what is the refund policy?\"")
+    print(
+        f"\nIndex now holds {manifest.chunk_count} chunks from {manifest.document_count} documents."
+    )
+    print('Next: .venv\\Scripts\\python scripts\\search.py "what is the refund policy?"')
     return 0
 
 

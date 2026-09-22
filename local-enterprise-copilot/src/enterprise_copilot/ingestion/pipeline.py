@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import Settings, get_settings
@@ -80,7 +80,8 @@ class IngestionPipeline:
             raise FileNotFoundError(f"Document directory not found: {root}")
         suffixes = self.registry.supported_suffixes()
         return sorted(
-            path for path in root.rglob("*")
+            path
+            for path in root.rglob("*")
             if path.is_file()
             and path.suffix.lower() in suffixes
             and not path.name.endswith(".meta.yaml")
@@ -100,7 +101,7 @@ class IngestionPipeline:
                 report.errors.append((path.name, exc.reason))
                 log.error("Failed to parse %s: %s", path.name, exc.reason)
                 continue
-            except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
+            except Exception as exc:
                 report.failed += 1
                 report.errors.append((path.name, f"{type(exc).__name__}: {exc}"))
                 log.exception("Unexpected error parsing %s", path.name)
@@ -194,8 +195,7 @@ class IngestionPipeline:
             vectors = self.embedder.embed_documents([c.text for c in all_chunks])
             report.embedding_seconds = time.perf_counter() - embed_started
             report.chunks_created = self.store.upsert_chunks(all_chunks, vectors)
-            log.info("Upserted %d chunks in %.1fs",
-                     report.chunks_created, report.embedding_seconds)
+            log.info("Upserted %d chunks in %.1fs", report.chunks_created, report.embedding_seconds)
         elif all_chunks:
             report.chunks_created = len(all_chunks)
 
@@ -217,7 +217,7 @@ class IngestionPipeline:
             embedding_dimension=dimension,
             chunk_target_tokens=self.settings.retrieval.chunk_target_tokens,
             chunk_overlap_tokens=self.settings.retrieval.chunk_overlap_tokens,
-            built_at_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            built_at_utc=datetime.now(UTC).isoformat(timespec="seconds"),
             document_count=len(documents),
             chunk_count=0 if dry_run else self.store.count(),
             documents={d.metadata.doc_id: d.metadata.content_hash for d in documents},
@@ -253,9 +253,7 @@ class IngestionPipeline:
     def read_manifest(self) -> IndexManifest | None:
         if not self.manifest_path.exists():
             return None
-        return IndexManifest.model_validate_json(
-            self.manifest_path.read_text(encoding="utf-8")
-        )
+        return IndexManifest.model_validate_json(self.manifest_path.read_text(encoding="utf-8"))
 
     # -- validation --------------------------------------------------------
     def validate_index(self) -> tuple[bool, list[str]]:

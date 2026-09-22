@@ -71,14 +71,20 @@ def clean_text(text: str) -> str:
     that carries meaning (indentation in lists, table pipes, clause numbers).
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace(" ", " ").replace("​", "")
+    text = text.replace("\u00a0", " ").replace("\u200b", "")
     # Smart quotes and dashes -> ASCII, so a query typed with a plain
     # apostrophe still matches the document text in BM25.
-    for fancy, plain in (("‘", "'"), ("’", "'"), ("“", '"'),
-                         ("”", '"'), ("–", "-"), ("—", "-")):
+    for fancy, plain in (
+        ("\u2018", "'"),
+        ("\u2019", "'"),
+        ("\u201c", '"'),
+        ("\u201d", '"'),
+        ("\u2013", "-"),
+        ("\u2014", "-"),
+    ):
         text = text.replace(fancy, plain)
-    text = re.sub(r"[ \t]+\n", "\n", text)      # trailing spaces
-    text = re.sub(r"\n{3,}", "\n\n", text)      # collapse blank runs
+    text = re.sub(r"[ \t]+\n", "\n", text)  # trailing spaces
+    text = re.sub(r"\n{3,}", "\n\n", text)  # collapse blank runs
     return text.strip()
 
 
@@ -103,8 +109,11 @@ def strip_headers_footers(pages: list[str]) -> list[str]:
         last_lines[lines[-1]] = last_lines.get(lines[-1], 0) + 1
 
     threshold = len(pages) * 0.6
-    repeated = {line for line, count in {**first_lines, **last_lines}.items()
-                if count >= threshold and len(line) < 120}
+    repeated = {
+        line
+        for line, count in {**first_lines, **last_lines}.items()
+        if count >= threshold and len(line) < 120
+    }
 
     if not repeated:
         return pages
@@ -130,18 +139,20 @@ def extract_sections(text: str) -> list[Section]:
     """
     matches = list(HEADING.finditer(text))
     if not matches:
-        return [Section(heading="", level=1, text=text.strip(),
-                        start_char=0, end_char=len(text))]
+        return [Section(heading="", level=1, text=text.strip(), start_char=0, end_char=len(text))]
 
     sections: list[Section] = []
-    stack: list[tuple[int, str]] = []   # (level, heading)
+    stack: list[tuple[int, str]] = []  # (level, heading)
 
     # Any preamble before the first heading.
     if matches[0].start() > 0:
         preamble = text[: matches[0].start()].strip()
         if preamble:
-            sections.append(Section(heading="", level=1, text=preamble,
-                                    start_char=0, end_char=matches[0].start()))
+            sections.append(
+                Section(
+                    heading="", level=1, text=preamble, start_char=0, end_char=matches[0].start()
+                )
+            )
 
     for index, match in enumerate(matches):
         level = len(match.group(1))
@@ -154,10 +165,16 @@ def extract_sections(text: str) -> list[Section]:
             stack.pop()
         breadcrumb = [h for _, h in stack]
 
-        sections.append(Section(
-            heading=heading, level=level, text=body,
-            start_char=match.start(), end_char=body_end, breadcrumb=breadcrumb,
-        ))
+        sections.append(
+            Section(
+                heading=heading,
+                level=level,
+                text=body,
+                start_char=match.start(),
+                end_char=body_end,
+                breadcrumb=breadcrumb,
+            )
+        )
         stack.append((level, heading))
 
     return sections
@@ -191,12 +208,15 @@ class MarkdownParser(DocumentParser):
         except yaml.YAMLError as exc:
             raise ParserError(path, f"invalid YAML front matter: {exc}") from exc
 
-        body = clean_text(raw[match.end():])
+        body = clean_text(raw[match.end() :])
         metadata = self._build_metadata(path, front, body, warnings)
 
         return ParsedDocument(
-            metadata=metadata, text=body, sections=extract_sections(body),
-            parser=self.name, warnings=warnings,
+            metadata=metadata,
+            text=body,
+            sections=extract_sections(body),
+            parser=self.name,
+            warnings=warnings,
         )
 
     def _build_metadata(
@@ -278,13 +298,15 @@ class PdfParser(DocumentParser):
         metadata = self._sidecar_metadata(path, text, warnings)
 
         return ParsedDocument(
-            metadata=metadata, text=text, sections=extract_sections(text),
-            page_count=len(pages), parser=self.name, warnings=warnings,
+            metadata=metadata,
+            text=text,
+            sections=extract_sections(text),
+            page_count=len(pages),
+            parser=self.name,
+            warnings=warnings,
         )
 
-    def _sidecar_metadata(
-        self, path: Path, text: str, warnings: list[str]
-    ) -> DocumentMetadata:
+    def _sidecar_metadata(self, path: Path, text: str, warnings: list[str]) -> DocumentMetadata:
         sidecar = path.with_suffix(".meta.yaml")
         front: dict[str, Any] = {}
         if sidecar.exists():
@@ -339,7 +361,8 @@ class DocxParser(DocumentParser):
             content = paragraph.text.strip()
             if not content:
                 continue
-            style = (paragraph.style.name or "").lower()
+            paragraph_style = paragraph.style
+            style = (paragraph_style.name or "").lower() if paragraph_style is not None else ""
             if style.startswith("heading"):
                 try:
                     level = int(style.replace("heading", "").strip() or 1)
@@ -364,26 +387,25 @@ class DocxParser(DocumentParser):
 
         metadata = self._sidecar_metadata(path, text, warnings)
         return ParsedDocument(
-            metadata=metadata, text=text, sections=extract_sections(text),
-            parser=self.name, warnings=warnings,
+            metadata=metadata,
+            text=text,
+            sections=extract_sections(text),
+            parser=self.name,
+            warnings=warnings,
         )
 
     @staticmethod
     def _render_table(table: Any) -> str:
-        rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells]
-                for row in table.rows]
+        rows = [[cell.text.strip().replace("|", "\\|") for cell in row.cells] for row in table.rows]
         rows = [r for r in rows if any(r)]
         if not rows:
             return ""
         header, *body = rows
-        lines = ["| " + " | ".join(header) + " |",
-                 "|" + "|".join("---" for _ in header) + "|"]
+        lines = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
         lines += ["| " + " | ".join(r) + " |" for r in body]
         return "\n".join(lines)
 
-    def _sidecar_metadata(
-        self, path: Path, text: str, warnings: list[str]
-    ) -> DocumentMetadata:
+    def _sidecar_metadata(self, path: Path, text: str, warnings: list[str]) -> DocumentMetadata:
         return PdfParser()._sidecar_metadata(path, text, warnings)
 
 
@@ -420,7 +442,13 @@ class ParserRegistry:
 
 
 __all__ = [
-    "DocumentParser", "DocxParser", "MarkdownParser", "ParserError",
-    "ParserRegistry", "PdfParser", "clean_text", "extract_sections",
+    "DocumentParser",
+    "DocxParser",
+    "MarkdownParser",
+    "ParserError",
+    "ParserRegistry",
+    "PdfParser",
+    "clean_text",
+    "extract_sections",
     "strip_headers_footers",
 ]

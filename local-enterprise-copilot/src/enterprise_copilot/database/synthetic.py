@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from ..config import Settings
 
@@ -49,8 +49,9 @@ class Volumes:
 
     @classmethod
     def demo(cls) -> Volumes:
-        return cls(customers=90, tickets=500, incidents=5,
-                   health_snapshot_months=4, usage_window_days=90)
+        return cls(
+            customers=90, tickets=500, incidents=5, health_snapshot_months=4, usage_window_days=90
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -76,18 +77,40 @@ EDGE_CASES = {
 }
 
 INDUSTRIES = [
-    "Financial Services", "Healthcare", "Retail", "Manufacturing", "Technology",
-    "Logistics", "Education", "Energy", "Telecommunications", "Public Sector",
-    "Media", "Professional Services",
+    "Financial Services",
+    "Healthcare",
+    "Retail",
+    "Manufacturing",
+    "Technology",
+    "Logistics",
+    "Education",
+    "Energy",
+    "Telecommunications",
+    "Public Sector",
+    "Media",
+    "Professional Services",
 ]
 TICKET_CATEGORIES = [
-    "Billing", "Data Import", "Performance", "Access / SSO", "API Error",
-    "Reporting", "Integration", "Feature Request", "Outage", "Configuration",
+    "Billing",
+    "Data Import",
+    "Performance",
+    "Access / SSO",
+    "API Error",
+    "Reporting",
+    "Integration",
+    "Feature Request",
+    "Outage",
+    "Configuration",
 ]
 CANCEL_REASONS = [
-    "Budget reduction", "Switched to competitor", "Product did not meet needs",
-    "Company acquired", "Consolidating vendors", "Poor support experience",
-    "Project completed", "Lack of adoption",
+    "Budget reduction",
+    "Switched to competitor",
+    "Product did not meet needs",
+    "Company acquired",
+    "Consolidating vendors",
+    "Poor support experience",
+    "Project completed",
+    "Lack of adoption",
 ]
 REFUND_REASONS = [
     ("service_credit", "Service credit for SLA breach"),
@@ -135,10 +158,21 @@ class GeneratedData:
         return {
             name: len(getattr(self, name))
             for name in (
-                "customers", "contacts", "subscriptions", "subscription_changes",
-                "usage", "invoices", "invoice_items", "payments", "refunds",
-                "tickets", "ticket_events", "sla_breaches", "incidents",
-                "incident_impact", "health",
+                "customers",
+                "contacts",
+                "subscriptions",
+                "subscription_changes",
+                "usage",
+                "invoices",
+                "invoice_items",
+                "payments",
+                "refunds",
+                "tickets",
+                "ticket_events",
+                "sla_breaches",
+                "incidents",
+                "incident_impact",
+                "health",
             )
         }
 
@@ -169,8 +203,10 @@ def _month_starts(start: date, end: date) -> list[date]:
 def _add_months(when: date, count: int) -> date:
     total = when.month - 1 + count
     year, month = when.year + total // 12, total % 12 + 1
-    day = min(when.day, [31, 29 if year % 4 == 0 else 28, 31, 30, 31, 30,
-                         31, 31, 30, 31, 30, 31][month - 1])
+    day = min(
+        when.day,
+        [31, 29 if year % 4 == 0 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1],
+    )
     return date(year, month, day)
 
 
@@ -264,23 +300,37 @@ class SyntheticGenerator:
             for slot in range(self.rng.randint(1, 3)):
                 name = self.faker.name()
                 domain = (
-                    customer["display_name"].lower()
-                    .replace(" ", "").replace(",", "").replace(".", "")[:20]
+                    customer["display_name"]
+                    .lower()
+                    .replace(" ", "")
+                    .replace(",", "")
+                    .replace(".", "")[:20]
                 )
-                self.data.contacts.append({
-                    "_customer_index": customer["_index"],
-                    "tenant_id": customer["tenant_id"],
-                    "full_name": name,
-                    "email": f"{name.split()[0].lower()}.{name.split()[-1].lower()}@{domain}.example",
-                    # ~30% missing phone.
-                    "phone": None if self.rng.random() < 0.30 else self.faker.numerify("+1-###-###-####"),
-                    "role_title": self.rng.choice([
-                        "VP Engineering", "Head of Data", "IT Director", "CTO",
-                        "Operations Manager", "Procurement Lead", None,
-                    ]),
-                    "is_primary": 1 if slot == 0 else 0,
-                    "is_synthetic": 1,
-                })
+                self.data.contacts.append(
+                    {
+                        "_customer_index": customer["_index"],
+                        "tenant_id": customer["tenant_id"],
+                        "full_name": name,
+                        "email": f"{name.split()[0].lower()}.{name.split()[-1].lower()}@{domain}.example",
+                        # ~30% missing phone.
+                        "phone": None
+                        if self.rng.random() < 0.30
+                        else self.faker.numerify("+1-###-###-####"),
+                        "role_title": self.rng.choice(
+                            [
+                                "VP Engineering",
+                                "Head of Data",
+                                "IT Director",
+                                "CTO",
+                                "Operations Manager",
+                                "Procurement Lead",
+                                None,
+                            ]
+                        ),
+                        "is_primary": 1 if slot == 0 else 0,
+                        "is_synthetic": 1,
+                    }
+                )
 
     # -- subscriptions -----------------------------------------------------
     def generate_subscriptions(self) -> None:
@@ -296,7 +346,11 @@ class SyntheticGenerator:
         }
 
         for customer in self.data.customers:
-            count = 1 if customer["_is_trial_only"] else self.rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
+            count = (
+                1
+                if customer["_is_trial_only"]
+                else self.rng.choices([1, 2, 3], weights=[0.6, 0.3, 0.1])[0]
+            )
 
             for _ in range(count):
                 tier = self.rng.choice(tier_for_segment[customer["segment"]])
@@ -309,8 +363,10 @@ class SyntheticGenerator:
                 seats = max(1, int(plan["seats_included"] * self.rng.uniform(0.6, 1.8)))
                 discount = self.rng.choice([0, 0, 0, 5, 10, 15, 20])
                 mrr = round(
-                    float(plan["list_price_monthly"]) * (seats / max(plan["seats_included"], 1))
-                    * (1 - discount / 100), 4
+                    float(plan["list_price_monthly"])
+                    * (seats / max(plan["seats_included"], 1))
+                    * (1 - discount / 100),
+                    4,
                 )
                 mrr = max(mrr, 0)
 
@@ -364,13 +420,21 @@ class SyntheticGenerator:
             "_subscription_index": sub["_index"],
             "tenant_id": customer["tenant_id"],
         }
-        self.data.subscription_changes.append({
-            **base, "change_type": "new", "changed_on": sub["started_on"],
-            "from_plan_id": None, "to_plan_id": sub["plan_id"],
-            "from_seats": None, "to_seats": sub["seats"],
-            "from_mrr": None, "to_mrr": sub["mrr_amount"],
-            "mrr_delta": sub["mrr_amount"], "reason": "New subscription",
-        })
+        self.data.subscription_changes.append(
+            {
+                **base,
+                "change_type": "new",
+                "changed_on": sub["started_on"],
+                "from_plan_id": None,
+                "to_plan_id": sub["plan_id"],
+                "from_seats": None,
+                "to_seats": sub["seats"],
+                "from_mrr": None,
+                "to_mrr": sub["mrr_amount"],
+                "mrr_delta": sub["mrr_amount"],
+                "reason": "New subscription",
+            }
+        )
 
         if sub["is_trial"]:
             return
@@ -385,16 +449,21 @@ class SyntheticGenerator:
                 upgrade = self.rng.random() < 0.6
                 factor = self.rng.uniform(1.2, 1.9) if upgrade else self.rng.uniform(0.5, 0.85)
                 new_mrr = round(sub["mrr_amount"] * factor, 4)
-                self.data.subscription_changes.append({
-                    **base,
-                    "change_type": "upgrade" if upgrade else "downgrade",
-                    "changed_on": when,
-                    "from_plan_id": sub["plan_id"], "to_plan_id": sub["plan_id"],
-                    "from_seats": sub["seats"], "to_seats": sub["seats"],
-                    "from_mrr": sub["mrr_amount"], "to_mrr": new_mrr,
-                    "mrr_delta": round(new_mrr - sub["mrr_amount"], 4),
-                    "reason": "Plan migration" if upgrade else "Cost reduction",
-                })
+                self.data.subscription_changes.append(
+                    {
+                        **base,
+                        "change_type": "upgrade" if upgrade else "downgrade",
+                        "changed_on": when,
+                        "from_plan_id": sub["plan_id"],
+                        "to_plan_id": sub["plan_id"],
+                        "from_seats": sub["seats"],
+                        "to_seats": sub["seats"],
+                        "from_mrr": sub["mrr_amount"],
+                        "to_mrr": new_mrr,
+                        "mrr_delta": round(new_mrr - sub["mrr_amount"], 4),
+                        "reason": "Plan migration" if upgrade else "Cost reduction",
+                    }
+                )
                 sub["mrr_amount"] = new_mrr
 
         # Seat changes, which can be positive (expansion) or negative (contraction).
@@ -408,25 +477,39 @@ class SyntheticGenerator:
                 new_seats = max(1, sub["seats"] + delta_seats)
                 per_seat = sub["mrr_amount"] / max(sub["seats"], 1)
                 new_mrr = round(per_seat * new_seats, 4)
-                self.data.subscription_changes.append({
-                    **base, "change_type": "seat_change", "changed_on": when,
-                    "from_plan_id": sub["plan_id"], "to_plan_id": sub["plan_id"],
-                    "from_seats": sub["seats"], "to_seats": new_seats,
-                    "from_mrr": sub["mrr_amount"], "to_mrr": new_mrr,
-                    "mrr_delta": round(new_mrr - sub["mrr_amount"], 4),
-                    "reason": "Seat adjustment",
-                })
+                self.data.subscription_changes.append(
+                    {
+                        **base,
+                        "change_type": "seat_change",
+                        "changed_on": when,
+                        "from_plan_id": sub["plan_id"],
+                        "to_plan_id": sub["plan_id"],
+                        "from_seats": sub["seats"],
+                        "to_seats": new_seats,
+                        "from_mrr": sub["mrr_amount"],
+                        "to_mrr": new_mrr,
+                        "mrr_delta": round(new_mrr - sub["mrr_amount"], 4),
+                        "reason": "Seat adjustment",
+                    }
+                )
                 sub["seats"], sub["mrr_amount"] = new_seats, new_mrr
 
         if sub["ended_on"] is not None and sub["status"] == "cancelled":
-            self.data.subscription_changes.append({
-                **base, "change_type": "cancel", "changed_on": sub["ended_on"],
-                "from_plan_id": sub["plan_id"], "to_plan_id": None,
-                "from_seats": sub["seats"], "to_seats": 0,
-                "from_mrr": sub["mrr_amount"], "to_mrr": 0,
-                "mrr_delta": -sub["mrr_amount"],
-                "reason": sub["cancellation_reason"],
-            })
+            self.data.subscription_changes.append(
+                {
+                    **base,
+                    "change_type": "cancel",
+                    "changed_on": sub["ended_on"],
+                    "from_plan_id": sub["plan_id"],
+                    "to_plan_id": None,
+                    "from_seats": sub["seats"],
+                    "to_seats": 0,
+                    "from_mrr": sub["mrr_amount"],
+                    "to_mrr": 0,
+                    "mrr_delta": -sub["mrr_amount"],
+                    "reason": sub["cancellation_reason"],
+                }
+            )
 
     def _apply_churn_to_customers(self) -> None:
         """A customer churns when every non-trial subscription has ended."""
@@ -459,29 +542,45 @@ class SyntheticGenerator:
 
             plan = self.rng.choice(self.reference["plans"])
             seats = max(1, int(plan["seats_included"] * self.rng.uniform(0.6, 1.4)))
-            mrr = round(float(plan["list_price_monthly"]) * (seats / max(plan["seats_included"], 1)), 4)
+            mrr = round(
+                float(plan["list_price_monthly"]) * (seats / max(plan["seats_included"], 1)), 4
+            )
 
             sub = {
                 "_customer_index": customer["_index"],
                 "tenant_id": customer["tenant_id"],
-                "plan_id": plan["plan_id"], "_plan": plan,
-                "started_on": restart, "ended_on": None, "status": "active",
-                "seats": seats, "mrr_amount": mrr, "discount_pct": 0,
-                "currency_code": customer["billing_currency"], "is_trial": 0,
-                "auto_renew": 1, "cancellation_reason": None,
+                "plan_id": plan["plan_id"],
+                "_plan": plan,
+                "started_on": restart,
+                "ended_on": None,
+                "status": "active",
+                "seats": seats,
+                "mrr_amount": mrr,
+                "discount_pct": 0,
+                "currency_code": customer["billing_currency"],
+                "is_trial": 0,
+                "auto_renew": 1,
+                "cancellation_reason": None,
                 "_index": len(self.data.subscriptions),
             }
             self.data.subscriptions.append(sub)
-            self.data.subscription_changes.append({
-                "_customer_index": customer["_index"],
-                "_subscription_index": sub["_index"],
-                "tenant_id": customer["tenant_id"],
-                "change_type": "reactivate", "changed_on": restart,
-                "from_plan_id": None, "to_plan_id": plan["plan_id"],
-                "from_seats": None, "to_seats": seats,
-                "from_mrr": 0, "to_mrr": mrr, "mrr_delta": mrr,
-                "reason": "Customer returned",
-            })
+            self.data.subscription_changes.append(
+                {
+                    "_customer_index": customer["_index"],
+                    "_subscription_index": sub["_index"],
+                    "tenant_id": customer["tenant_id"],
+                    "change_type": "reactivate",
+                    "changed_on": restart,
+                    "from_plan_id": None,
+                    "to_plan_id": plan["plan_id"],
+                    "from_seats": None,
+                    "to_seats": seats,
+                    "from_mrr": 0,
+                    "to_mrr": mrr,
+                    "mrr_delta": mrr,
+                    "reason": "Customer returned",
+                }
+            )
             customer["status"] = "active"
             customer["churn_date"] = None
             customer["is_reactivated"] = 1

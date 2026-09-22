@@ -1,0 +1,7 @@
+# NOT FOR PRODUCTION.
+#
+# The open-source Vanna repository was archived in March 2026 and this project
+# uses its legacy remote client. Install this overlay only for an isolated
+# smoke test after reviewing docs/vanna_cloud.md.
+-r requirements.txt
+vanna==2.0.2

@@ -63,7 +63,7 @@ class TableInfo:
 
     schema: str
     name: str
-    object_type: str                       # BASE TABLE | VIEW
+    object_type: str  # BASE TABLE | VIEW
     columns: list[dict[str, Any]] = field(default_factory=list)
     foreign_keys: list[dict[str, str]] = field(default_factory=list)
     row_estimate: int = 0
@@ -135,9 +135,7 @@ class SQLContext:
     def render_examples(self) -> str:
         if not self.examples:
             return "(no approved examples matched this question)"
-        return "\n\n".join(
-            f"Q: {e['question']}\nSQL:\n{e['sql_text']}" for e in self.examples
-        )
+        return "\n\n".join(f"Q: {e['question']}\nSQL:\n{e['sql_text']}" for e in self.examples)
 
 
 class SchemaRetriever:
@@ -195,8 +193,7 @@ class SchemaRetriever:
                 *VISIBLE_SCHEMAS,
             )
             for row in cursor.fetchall():
-                (schema, name, kind, column, dtype, length,
-                 precision, scale, nullable, _) = row
+                (schema, name, kind, column, dtype, length, precision, scale, nullable, _) = row
                 key = f"{schema}.{name}"
                 if key.lower() in HIDDEN_OBJECTS:
                     continue
@@ -209,9 +206,13 @@ class SchemaRetriever:
                 elif dtype in ("decimal", "numeric") and precision is not None:
                     rendered = f"{dtype}({precision},{scale or 0})"
 
-                tables[key].columns.append({
-                    "name": column, "type": rendered, "nullable": nullable == "YES",
-                })
+                tables[key].columns.append(
+                    {
+                        "name": column,
+                        "type": rendered,
+                        "nullable": nullable == "YES",
+                    }
+                )
 
             cursor.execute(
                 """
@@ -228,17 +229,14 @@ class SchemaRetriever:
             )
             relationships = []
             for ps, pt, pc, rs, rt, rc in cursor.fetchall():
-                relationships.append(
-                    f"[{ps}].[{pt}].[{pc}] = [{rs}].[{rt}].[{rc}]"
-                )
+                relationships.append(f"[{ps}].[{pt}].[{pc}] = [{rs}].[{rt}].[{rc}]")
                 key = f"{ps}.{pt}"
                 if key in tables:
-                    tables[key].foreign_keys.append(
-                        {"column": pc, "references": f"{rs}.{rt}.{rc}"}
-                    )
+                    tables[key].foreign_keys.append({"column": pc, "references": f"{rs}.{rt}.{rc}"})
 
-        log.info("Schema catalog read: %d objects, %d relationships",
-                 len(tables), len(relationships))
+        log.info(
+            "Schema catalog read: %d objects, %d relationships", len(tables), len(relationships)
+        )
         return list(tables.values()), relationships
 
     def _write_cache(self) -> None:
@@ -246,8 +244,11 @@ class SchemaRetriever:
         payload = {
             "tables": [
                 {
-                    "schema": t.schema, "name": t.name, "object_type": t.object_type,
-                    "columns": t.columns, "foreign_keys": t.foreign_keys,
+                    "schema": t.schema,
+                    "name": t.name,
+                    "object_type": t.object_type,
+                    "columns": t.columns,
+                    "foreign_keys": t.foreign_keys,
                     "row_estimate": t.row_estimate,
                 }
                 for t in (self._catalog or [])
@@ -282,12 +283,10 @@ class SchemaRetriever:
             self._ensure_embedder()
             catalog = self.load_catalog()
             vectors = self._embedder.embed_documents([t.searchable_text() for t in catalog])
-            self._table_vectors = {
-                t.qualified: v for t, v in zip(catalog, vectors, strict=True)
-            }
+            self._table_vectors = {t.qualified: v for t, v in zip(catalog, vectors, strict=True)}
             self._write_cache()
             return self._table_vectors
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Schema embeddings unavailable (%s); lexical matching only", exc)
             return None
 
@@ -316,7 +315,7 @@ class SchemaRetriever:
                     vector = vectors.get(table.qualified)
                     if vector:
                         semantic[table.qualified] = _cosine(query_vector, vector)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("Question embedding failed (%s); lexical matching only", exc)
 
         scored: list[tuple[float, TableInfo]] = []
@@ -325,7 +324,7 @@ class SchemaRetriever:
                 table.qualified, 0.0
             )
             if table.is_view:
-                score += 0.15   # prefer the curated surface
+                score += 0.15  # prefer the curated surface
             scored.append((score, table))
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
@@ -350,7 +349,8 @@ class SchemaRetriever:
         names = {t.qualified for t in tables}
         relationships = self._relationships or []
         return [
-            r for r in relationships
+            r
+            for r in relationships
             if any(f"[{n.split('.')[0]}].[{n.split('.')[1]}]" in r for n in names)
         ]
 
@@ -384,10 +384,18 @@ class SchemaRetriever:
             if term.lower() in question.lower():
                 overlap += 1.0
             if overlap > 0:
-                scored.append((overlap, {
-                    "term": term, "definition": definition, "sql_guidance": guidance,
-                    "version": version, "known_exclusions": exclusions or "",
-                }))
+                scored.append(
+                    (
+                        overlap,
+                        {
+                            "term": term,
+                            "definition": definition,
+                            "sql_guidance": guidance,
+                            "version": version,
+                            "known_exclusions": exclusions or "",
+                        },
+                    )
+                )
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in scored[:limit]]
@@ -410,9 +418,16 @@ class SchemaRetriever:
         for example_question, sql_text, category, tables_used in rows:
             haystack = set(tokenize(f"{example_question} {category} {tables_used or ''}"))
             overlap = len(question_tokens & haystack) / max(len(question_tokens | haystack), 1)
-            scored.append((overlap, {
-                "question": example_question, "sql_text": sql_text, "category": category,
-            }))
+            scored.append(
+                (
+                    overlap,
+                    {
+                        "question": example_question,
+                        "sql_text": sql_text,
+                        "category": category,
+                    },
+                )
+            )
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [item for score, item in scored[:limit] if score > 0]
@@ -439,4 +454,4 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
 
-__all__ = ["SQLContext", "SchemaRetriever", "TableInfo", "VISIBLE_SCHEMAS"]
+__all__ = ["VISIBLE_SCHEMAS", "SQLContext", "SchemaRetriever", "TableInfo"]

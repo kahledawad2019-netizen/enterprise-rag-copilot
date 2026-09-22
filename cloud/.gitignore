@@ -1,0 +1,20 @@
+# ---- Node ----
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ---- Wrangler ----
+.wrangler/
+.dev.vars
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+
+# ---- Secrets ----
+# Worker secrets go in `wrangler secret put`, backend secrets in the host's
+# own secret store. Nothing secret is ever a file in this tree.
+.env
+.env.*
+!.env.example

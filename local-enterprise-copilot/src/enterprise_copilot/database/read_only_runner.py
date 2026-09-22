@@ -107,30 +107,41 @@ class ReadOnlyRunner:
 
         if not validation.is_safe:
             self._audit(
-                trace_id=trace_id, app_user=app_user, tenant_id=tenant_id,
-                question=question, sql=sql, allowed=False,
+                trace_id=trace_id,
+                app_user=app_user,
+                tenant_id=tenant_id,
+                question=question,
+                sql=sql,
+                allowed=False,
                 block_reason=validation.reason,
             )
             raise QueryBlockedError(validation)
 
         needs_approval = (
             self.settings.security.require_sql_approval
-            if require_approval is None else require_approval
+            if require_approval is None
+            else require_approval
         )
         if needs_approval and not approved:
             self._audit(
-                trace_id=trace_id, app_user=app_user, tenant_id=tenant_id,
-                question=question, sql=sql, allowed=False,
+                trace_id=trace_id,
+                app_user=app_user,
+                tenant_id=tenant_id,
+                question=question,
+                sql=sql,
+                allowed=False,
                 block_reason="awaiting human approval",
             )
             raise QueryBlockedError(
                 ValidationResult(
                     is_safe=False,
                     sql=sql,
-                    violations=[(
-                        Violation.SUSPICIOUS_CONSTRUCT,
-                        "approval required before execution",
-                    )],
+                    violations=[
+                        (
+                            Violation.SUSPICIOUS_CONSTRUCT,
+                            "approval required before execution",
+                        )
+                    ],
                     warnings=["the query passed validation; it awaits human approval"],
                 )
             )
@@ -139,19 +150,28 @@ class ReadOnlyRunner:
 
         # Written before execution: a query that hangs must still be recorded.
         self._audit(
-            trace_id=trace_id, app_user=app_user, tenant_id=tenant_id,
-            question=question, sql=executed_sql, allowed=True,
+            trace_id=trace_id,
+            app_user=app_user,
+            tenant_id=tenant_id,
+            question=question,
+            sql=executed_sql,
+            allowed=True,
         )
 
         started = time.perf_counter()
         try:
-            rows, columns = self._execute(executed_sql)
+            rows, columns = self._execute(executed_sql, tenant_id=tenant_id)
         except Exception as exc:
             duration_ms = (time.perf_counter() - started) * 1000
             self._audit(
-                trace_id=trace_id, app_user=app_user, tenant_id=tenant_id,
-                question=question, sql=executed_sql, allowed=True,
-                error_category=type(exc).__name__, duration_ms=duration_ms,
+                trace_id=trace_id,
+                app_user=app_user,
+                tenant_id=tenant_id,
+                question=question,
+                sql=executed_sql,
+                allowed=True,
+                error_category=type(exc).__name__,
+                duration_ms=duration_ms,
             )
             raise QueryExecutionError(
                 f"The query was safe but failed at the server: "
@@ -160,38 +180,59 @@ class ReadOnlyRunner:
 
         duration_ms = (time.perf_counter() - started) * 1000
         result = QueryResult(
-            sql=sql, executed_sql=executed_sql, rows=rows, columns=columns,
-            row_count=len(rows), duration_ms=duration_ms, trace_id=trace_id,
-            validation=validation, warnings=list(validation.warnings),
+            sql=sql,
+            executed_sql=executed_sql,
+            rows=rows,
+            columns=columns,
+            row_count=len(rows),
+            duration_ms=duration_ms,
+            trace_id=trace_id,
+            validation=validation,
+            warnings=list(validation.warnings),
         )
 
         self._cap_rows(result)
         self._redact(result)
 
         self._audit(
-            trace_id=trace_id, app_user=app_user, tenant_id=tenant_id,
-            question=question, sql=executed_sql, allowed=True,
-            row_count=result.row_count, duration_ms=duration_ms,
+            trace_id=trace_id,
+            app_user=app_user,
+            tenant_id=tenant_id,
+            question=question,
+            sql=executed_sql,
+            allowed=True,
+            row_count=result.row_count,
+            duration_ms=duration_ms,
         )
-        log.info("Query ok: %d rows in %.0f ms (trace %s)",
-                 result.row_count, duration_ms, trace_id)
+        log.info("Query ok: %d rows in %.0f ms (trace %s)", result.row_count, duration_ms, trace_id)
         return result
 
     # -- internals ---------------------------------------------------------
-    def _execute(self, sql: str) -> tuple[list[dict[str, Any]], list[str]]:
+    def _execute(
+        self, sql: str, *, tenant_id: int | None
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         with raw_connection(self.settings) as conn:
             # Cap on how long the query may run. In pyodbc this is a property
             # of the CONNECTION, not the cursor - setting it on the cursor
             # raises AttributeError, so a runaway query would never be cut off.
             conn.timeout = self.settings.database.query_timeout_seconds
             cursor = conn.cursor()
+
+            # SQL Server RLS is the hard tenant boundary. Set (or clear) the
+            # value on every borrowed connection; pyodbc pooling can otherwise
+            # retain a previous caller's session context.
+            cursor.execute(
+                "EXEC sys.sp_set_session_context @key=N'tenant_id', @value=?",
+                tenant_id,
+            )
             cursor.execute(sql)
 
             if cursor.description is None:
                 return [], []
 
             columns = [c[0] for c in cursor.description]
-            fetched = cursor.fetchall()
+            maximum = self.settings.database.max_result_rows
+            fetched = cursor.fetchall() if maximum <= 0 else cursor.fetchmany(maximum + 1)
             rows = [
                 {column: _coerce(value) for column, value in zip(columns, row, strict=True)}
                 for row in fetched
@@ -260,12 +301,20 @@ class ReadOnlyRunner:
                          error_category)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    trace_id, app_user, tenant_id, "text_to_sql", question, sql,
-                    1 if allowed else 0, block_reason, row_count,
+                    trace_id,
+                    app_user,
+                    tenant_id,
+                    "text_to_sql",
+                    question,
+                    sql,
+                    1 if allowed else 0,
+                    block_reason,
+                    row_count,
                     int(duration_ms) if duration_ms is not None else None,
-                    self.settings.chat_model, error_category,
+                    self.settings.chat_model,
+                    error_category,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Audit write failed (query still proceeds): %s", exc)
 
 

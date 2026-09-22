@@ -69,7 +69,7 @@ def create_engine(settings: Settings | None = None, **kwargs: Any) -> Engine:
     settings = settings or get_settings()
     return _create_engine(
         settings.database.sqlalchemy_url(),
-        fast_executemany=True,   # bulk inserts for the synthetic data loader
+        fast_executemany=True,  # bulk inserts for the synthetic data loader
         pool_pre_ping=True,
         **kwargs,
     )

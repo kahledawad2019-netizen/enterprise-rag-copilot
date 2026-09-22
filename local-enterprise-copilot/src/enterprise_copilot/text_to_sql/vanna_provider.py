@@ -28,7 +28,6 @@ from ..config import Settings, get_settings
 from ..database.read_only_runner import QueryResult
 from .native import EXPLAIN_PROMPT, extract_sql
 from .provider import GeneratedSQL, SQLRequest, TextToSQLProvider
-from .schema_retriever import SQLContext
 
 log = logging.getLogger(__name__)
 
@@ -132,16 +131,18 @@ class VannaTextToSQLProvider(TextToSQLProvider):
                 self._vanna.train(ddl=table.to_ddl())
                 counts["ddl"] += 1
 
-            for relationship in (self.schema._relationships or []):
+            for relationship in self.schema._relationships or []:
                 self._vanna.train(documentation=f"Join relationship: {relationship}")
                 counts["documentation"] += 1
 
             for term in self._all_glossary_terms():
-                self._vanna.train(documentation=(
-                    f"BUSINESS DEFINITION - {term['term']} (v{term['version']}): "
-                    f"{term['definition']} HOW TO COMPUTE: {term['sql_guidance']} "
-                    f"EXCLUDES: {term['known_exclusions'] or 'nothing stated'}"
-                ))
+                self._vanna.train(
+                    documentation=(
+                        f"BUSINESS DEFINITION - {term['term']} (v{term['version']}): "
+                        f"{term['definition']} HOW TO COMPUTE: {term['sql_guidance']} "
+                        f"EXCLUDES: {term['known_exclusions'] or 'nothing stated'}"
+                    )
+                )
                 counts["documentation"] += 1
 
             for example in self._all_examples():
@@ -162,8 +163,13 @@ class VannaTextToSQLProvider(TextToSQLProvider):
                 "FROM ai.business_glossary WHERE is_current = 1"
             )
             return [
-                {"term": t, "definition": d, "sql_guidance": g,
-                 "version": v, "known_exclusions": e or ""}
+                {
+                    "term": t,
+                    "definition": d,
+                    "sql_guidance": g,
+                    "version": v,
+                    "known_exclusions": e or "",
+                }
                 for t, d, g, v, e in cursor.fetchall()
             ]
 
@@ -190,9 +196,7 @@ class VannaTextToSQLProvider(TextToSQLProvider):
         try:
             raw = self._vanna.generate_sql(question, allow_llm_to_see_data=False)
         except Exception as exc:
-            raise RuntimeError(
-                f"Vanna SQL generation failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise RuntimeError(f"Vanna SQL generation failed: {type(exc).__name__}: {exc}") from exc
 
         sql = extract_sql(raw) if raw else ""
 
@@ -233,25 +237,27 @@ class VannaTextToSQLProvider(TextToSQLProvider):
 
     # -- explanation -------------------------------------------------------
     def explain_result(self, question: str, result: QueryResult) -> str:
-        import ollama
+        from ..llm import build_chat_client
 
-        client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        client = build_chat_client(self.settings)
         try:
             response = client.chat(
                 model=self.settings.chat_model,
-                messages=[{
-                    "role": "user",
-                    "content": EXPLAIN_PROMPT.format(
-                        question=question, sql=result.executed_sql,
-                        row_count=result.row_count, rows=result.preview(limit=15),
-                    ),
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": EXPLAIN_PROMPT.format(
+                            question=question,
+                            sql=result.executed_sql,
+                            row_count=result.row_count,
+                            rows=result.preview(limit=15),
+                        ),
+                    }
+                ],
                 options={"temperature": 0.1, "num_predict": 300},
             )
             return response["message"]["content"].strip()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Result explanation failed: %s", exc)
             return f"The query returned {result.row_count} row(s)."
 

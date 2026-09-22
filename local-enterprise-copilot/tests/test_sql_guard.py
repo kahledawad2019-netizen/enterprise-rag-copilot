@@ -26,39 +26,46 @@ def violations_of(result) -> set[Violation]:
 
 
 class TestAllowsLegitimateReads:
-    @pytest.mark.parametrize("sql", [
-        "SELECT TOP 5 customer_name FROM analytics.vw_customer_360",
-        "SELECT customer_name, current_arr FROM analytics.vw_customer_360 ORDER BY current_arr DESC",
-        "WITH t AS (SELECT customer_id FROM core.customers) SELECT COUNT(*) FROM t",
-        "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region",
-        "SELECT a.customer_name FROM analytics.vw_customer_360 a "
-        "JOIN analytics.vw_customer_risk b ON b.customer_id = a.customer_id",
-        "SELECT COUNT(*) FROM support.tickets WHERE priority = 'P1'",
-    ])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT TOP 5 customer_name FROM analytics.vw_customer_360",
+            "SELECT customer_name, current_arr FROM analytics.vw_customer_360 ORDER BY current_arr DESC",
+            "WITH t AS (SELECT customer_id FROM core.customers) SELECT COUNT(*) FROM t",
+            "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region",
+            "SELECT a.customer_name FROM analytics.vw_customer_360 a "
+            "JOIN analytics.vw_customer_risk b ON b.customer_id = a.customer_id",
+            "SELECT COUNT(*) FROM support.tickets WHERE priority = 'P1'",
+        ],
+    )
     def test_allowed(self, guard: SQLGuard, sql: str) -> None:
-        result = guard.validate(sql)
+        result = guard.validate(sql, tenant_id=1)
         assert result.is_safe, f"wrongly blocked: {result.reason}"
 
     def test_cte_is_not_mistaken_for_a_table(self, guard: SQLGuard) -> None:
         """A CTE name must not be schema-checked as though it were a table."""
         result = guard.validate(
             "WITH recent AS (SELECT customer_id, tenant_id FROM core.customers) "
-            "SELECT COUNT(*) FROM recent"
+            "SELECT COUNT(*) FROM recent",
+            tenant_id=1,
         )
         assert result.is_safe, result.reason
         assert "recent" not in " ".join(result.tables)
 
 
 class TestBlocksWrites:
-    @pytest.mark.parametrize(("sql", "label"), [
-        ("DELETE FROM core.customers", "delete"),
-        ("UPDATE core.customers SET status = 'x'", "update"),
-        ("INSERT INTO core.customers (customer_code) VALUES ('x')", "insert"),
-        ("DROP TABLE core.customers", "drop"),
-        ("TRUNCATE TABLE support.tickets", "truncate"),
-        ("ALTER TABLE core.customers ADD c INT", "alter"),
-        ("CREATE TABLE evil (id INT)", "create"),
-    ])
+    @pytest.mark.parametrize(
+        ("sql", "label"),
+        [
+            ("DELETE FROM core.customers", "delete"),
+            ("UPDATE core.customers SET status = 'x'", "update"),
+            ("INSERT INTO core.customers (customer_code) VALUES ('x')", "insert"),
+            ("DROP TABLE core.customers", "drop"),
+            ("TRUNCATE TABLE support.tickets", "truncate"),
+            ("ALTER TABLE core.customers ADD c INT", "alter"),
+            ("CREATE TABLE evil (id INT)", "create"),
+        ],
+    )
     def test_write_is_blocked(self, guard: SQLGuard, sql: str, label: str) -> None:
         result = guard.validate(sql)
         assert not result.is_safe, f"{label} was allowed"
@@ -73,12 +80,15 @@ class TestBlocksWrites:
 class TestBlocksBatching:
     """Batched statements are the classic way past a keyword blocklist."""
 
-    @pytest.mark.parametrize("sql", [
-        "SELECT 1; DROP TABLE core.customers",
-        "SELECT 1 /* hide */ ; DROP TABLE core.customers",
-        "SELECT * FROM core.customers; DELETE FROM core.customers",
-        "SELECT 1;\n\nTRUNCATE TABLE support.tickets",
-    ])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT 1; DROP TABLE core.customers",
+            "SELECT 1 /* hide */ ; DROP TABLE core.customers",
+            "SELECT * FROM core.customers; DELETE FROM core.customers",
+            "SELECT 1;\n\nTRUNCATE TABLE support.tickets",
+        ],
+    )
     def test_batched_statements_blocked(self, guard: SQLGuard, sql: str) -> None:
         result = guard.validate(sql)
         assert not result.is_safe
@@ -91,12 +101,15 @@ class TestBlocksBatching:
 
 
 class TestBlocksProcedures:
-    @pytest.mark.parametrize("sql", [
-        "EXEC sp_executesql N'SELECT 1'",
-        "EXECUTE sp_who",
-        "SELECT * FROM OPENROWSET('SQLNCLI', 'x', 'SELECT 1')",
-        "SELECT * FROM OPENQUERY(remote, 'SELECT 1')",
-    ])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "EXEC sp_executesql N'SELECT 1'",
+            "EXECUTE sp_who",
+            "SELECT * FROM OPENROWSET('SQLNCLI', 'x', 'SELECT 1')",
+            "SELECT * FROM OPENQUERY(remote, 'SELECT 1')",
+        ],
+    )
     def test_procedure_and_remote_access_blocked(self, guard: SQLGuard, sql: str) -> None:
         assert not guard.validate(sql).is_safe
 
@@ -135,7 +148,7 @@ class TestColumnRestrictions:
         assert Violation.FORBIDDEN_COLUMN in violations_of(result)
 
     def test_select_star_is_warned_about(self, guard: SQLGuard) -> None:
-        result = guard.validate("SELECT * FROM analytics.vw_customer_360")
+        result = guard.validate("SELECT * FROM analytics.vw_customer_360", tenant_id=1)
         assert result.is_safe
         assert any("SELECT *" in w for w in result.warnings)
 
@@ -150,9 +163,7 @@ class TestTenantIsolation:
         but the user gets an answer instead of a refusal. See
         tests/test_tenant_injection.py and `security/tenant_injection.py`.
         """
-        result = guard.validate(
-            "SELECT customer_name FROM analytics.vw_customer_360", tenant_id=1
-        )
+        result = guard.validate("SELECT customer_name FROM analytics.vw_customer_360", tenant_id=1)
         assert result.is_safe
         assert result.tenant_injected
         assert "tenant_id = 1" in result.effective_sql
@@ -163,7 +174,8 @@ class TestTenantIsolation:
         """The original strict behaviour is still available and still correct."""
         result = guard.validate(
             "SELECT customer_name FROM analytics.vw_customer_360",
-            tenant_id=1, auto_repair=False,
+            tenant_id=1,
+            auto_repair=False,
         )
         assert not result.is_safe
         assert Violation.MISSING_TENANT_FILTER in violations_of(result)
@@ -202,8 +214,10 @@ class TestTenantIsolation:
         scoped. The AST does not, so a real predicate is added alongside the
         literal rather than the literal being mistaken for one.
         """
-        sql = ("SELECT customer_name FROM analytics.vw_customer_360 "
-               "WHERE customer_name = 'tenant_id = 1'")
+        sql = (
+            "SELECT customer_name FROM analytics.vw_customer_360 "
+            "WHERE customer_name = 'tenant_id = 1'"
+        )
 
         strict = guard.validate(sql, tenant_id=1, auto_repair=False)
         assert not strict.is_safe
@@ -219,15 +233,14 @@ class TestTenantIsolation:
 class TestResourceLimits:
     def test_excessive_joins_blocked(self, guard: SQLGuard) -> None:
         joins = " ".join(
-            f"JOIN core.customers c{n} ON c{n}.customer_id = c0.customer_id"
-            for n in range(1, 12)
+            f"JOIN core.customers c{n} ON c{n}.customer_id = c0.customer_id" for n in range(1, 12)
         )
         result = guard.validate(f"SELECT c0.customer_id FROM core.customers c0 {joins}")
         assert not result.is_safe
         assert Violation.TOO_MANY_JOINS in violations_of(result)
 
     def test_row_limit_is_injected(self, guard: SQLGuard) -> None:
-        result = guard.validate("SELECT customer_name FROM analytics.vw_customer_360")
+        result = guard.validate("SELECT customer_name FROM analytics.vw_customer_360", tenant_id=1)
         assert result.effective_sql != result.sql
         assert "TOP" in result.effective_sql.upper()
 
@@ -259,6 +272,6 @@ class TestViewPreference:
 
     def test_base_table_use_is_warned_about(self, guard: SQLGuard) -> None:
         """Base-table queries recompute metrics the views already define."""
-        result = guard.validate("SELECT display_name FROM core.customers")
+        result = guard.validate("SELECT display_name FROM core.customers", tenant_id=1)
         assert result.is_safe
         assert any("base tables" in w for w in result.warnings)

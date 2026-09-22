@@ -114,10 +114,47 @@ No prompt is a complete defence. This is one layer; the guard and the
 (pending) read-only principal are the others, and none relies on the model
 behaving well.
 
+## Data locality
+
+The default configuration sends nothing off the machine. Three settings
+change that, and each is off unless explicitly enabled:
+
+| Setting | What it sends | What it never sends |
+|---|---|---|
+| `LLM_PROVIDER=openai` | Every prompt: retrieved passages, the schema subset, the question | Query results |
+| `EMBEDDING_PROVIDER=cloudflare\|openai` | Document text at index time, questions at query time | Query results |
+| `TEXT_TO_SQL_PROVIDER=vanna_cloud` | DDL, glossary and approved examples once; the question per query | Query results, unless `VANNA_ALLOW_LLM_TO_SEE_DATA=true` |
+
+Two things are worth being precise about.
+
+**No safety property moves.** The model was never trusted. Generated SQL goes
+through `SQLGuard` and `ReadOnlyRunner` whether it came from a local model or
+a hosted one; retrieved text is never treated as instructions either way;
+citations are validated against the evidence package either way. A hosted
+model is exactly as untrusted as a local one.
+
+**Query results are the line.** Sending a schema discloses business
+structure. Sending rows discloses customers. Only
+`VANNA_ALLOW_LLM_TO_SEE_DATA` can cross that line, it defaults to false, and
+it should stay false.
+
+`/health` reports the live posture as a `data_locality` check, so an operator
+can see it without reading the container's environment.
+`describe_providers()` is the sanctioned way to render configuration — it has
+no branch that can emit a key, and a test asserts it.
+
+See [hosted_models.md](hosted_models.md) and [vanna_cloud.md](vanna_cloud.md).
+
 ## Secrets
 
 - The DB password is a pydantic `SecretStr` — logging, printing or JSON-dumping
   the settings shows `**********`
+- So are `LLM_API_KEY`, `EMBEDDING_API_KEY`,
+  `EMBEDDING_CLOUDFLARE_API_TOKEN` and `VANNA_API_KEY`
+- A blank value for any of them means *absent*, not *empty string* —
+  enforced by a validator, because the opposite behaviour with
+  `MSSQL_PASSWORD` produced a real defect: an empty `SecretStr` passed an
+  `is not None` check and was sent to the driver
 - The only unwrap is inside the connection-string builder, whose output is
   never logged; `safe_odbc_connection_string()` exists for display
 - A blank `MSSQL_PASSWORD=` means "look in the Windows Credential Manager"

@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 TENANT_COLUMN = "tenant_id"
 
 
-def _tenant_scoped_tables(select: exp.Select, exempt: set[str]) -> list[exp.Table]:
+def tenant_scoped_tables(select: exp.Select, exempt: set[str]) -> list[exp.Table]:
     """Tables in THIS select that carry a tenant_id column.
 
     Only tables belonging to the business schemas are considered, and the
@@ -78,26 +78,40 @@ def _tenant_scoped_tables(select: exp.Select, exempt: set[str]) -> list[exp.Tabl
     return tables
 
 
-def _has_tenant_reference(select: exp.Select) -> bool:
-    """Does this select already mention tenant_id in its own WHERE or HAVING?"""
-    for clause in (select.args.get("where"), select.args.get("having")):
+def filtering_clauses(select: exp.Select) -> list[exp.Expression]:
+    """Filtering expressions owned by this SELECT, excluding nested SELECTs."""
+    clauses: list[exp.Expression] = []
+    for clause_name in ("where", "having"):
+        clause = select.args.get(clause_name)
         if clause is None:
             continue
+        clauses.append(clause)
+    for join in select.args.get("joins") or []:
+        condition = join.args.get("on")
+        if condition is not None:
+            clauses.append(condition)
+    return clauses
+
+
+def _has_tenant_reference(select: exp.Select) -> bool:
+    """Does this SELECT mention tenant_id in one of its filtering clauses?"""
+    for clause in filtering_clauses(select):
         for column in clause.find_all(exp.Column):
+            if column.find_ancestor(exp.Select) is not select:
+                continue
             if (column.name or "").lower() == TENANT_COLUMN:
                 return True
     return False
 
 
-def _qualifier_for(select: exp.Select, table: exp.Table) -> str | None:
+def qualifier_for(select: exp.Select, table: exp.Table) -> str | None:
     """The alias to prefix `tenant_id` with, when the select has joins.
 
     A bare `tenant_id` in a multi-table select is ambiguous and SQL Server
     rejects it, so the predicate must be qualified.
     """
     distinct_sources = {
-        t.alias_or_name for t in select.find_all(exp.Table)
-        if t.find_ancestor(exp.Select) is select
+        t.alias_or_name for t in select.find_all(exp.Table) if t.find_ancestor(exp.Select) is select
     }
     if len(distinct_sources) <= 1:
         return None
@@ -130,26 +144,31 @@ def inject_tenant_predicate(
         if _has_tenant_reference(select):
             continue
 
-        tables = _tenant_scoped_tables(select, exempt)
+        tables = tenant_scoped_tables(select, exempt)
         if not tables:
             continue
 
-        target = tables[0]
-        qualifier = _qualifier_for(select, target)
+        # A join can contain multiple independently tenant-scoped relations.
+        # Filtering only tables[0] leaves the remaining relations readable
+        # across tenants when their join key is not globally unique.
+        for target in tables:
+            qualifier = qualifier_for(select, target)
 
-        column = exp.column(TENANT_COLUMN, table=qualifier) if qualifier else exp.column(
-            TENANT_COLUMN
-        )
-        predicate = exp.EQ(this=column, expression=exp.Literal.number(tenant_id))
+            column = (
+                exp.column(TENANT_COLUMN, table=qualifier)
+                if qualifier
+                else exp.column(TENANT_COLUMN)
+            )
+            predicate = exp.EQ(this=column, expression=exp.Literal.number(tenant_id))
 
-        existing = select.args.get("where")
-        if existing is not None:
-            select.set("where", exp.Where(this=exp.and_(existing.this, predicate)))
-        else:
-            select.set("where", exp.Where(this=predicate))
+            existing = select.args.get("where")
+            if existing is not None:
+                select.set("where", exp.Where(this=exp.and_(existing.this, predicate)))
+            else:
+                select.set("where", exp.Where(this=predicate))
 
-        label = f"{qualifier}.{TENANT_COLUMN}" if qualifier else TENANT_COLUMN
-        injections.append(f"{label} = {tenant_id} on {target.db}.{target.name}")
+            label = f"{qualifier}.{TENANT_COLUMN}" if qualifier else TENANT_COLUMN
+            injections.append(f"{label} = {tenant_id} on {target.db}.{target.name}")
 
     if not injections:
         return None, []
@@ -163,4 +182,11 @@ def can_inject(statement: exp.Expression) -> bool:
     return isinstance(statement, exp.Select)
 
 
-__all__ = ["TENANT_COLUMN", "can_inject", "inject_tenant_predicate"]
+__all__ = [
+    "TENANT_COLUMN",
+    "can_inject",
+    "filtering_clauses",
+    "inject_tenant_predicate",
+    "qualifier_for",
+    "tenant_scoped_tables",
+]

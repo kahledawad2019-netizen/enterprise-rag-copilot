@@ -28,7 +28,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -43,9 +43,7 @@ def load_cases(path: Path) -> list[dict]:
     if not path.exists():
         raise FileNotFoundError(f"Evaluation set not found: {path}")
     return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
 
 
@@ -64,7 +62,8 @@ def run_strategy(retriever, cases: list[dict], strategy: str, k: int) -> dict[st
 
     for case in cases:
         user = UserContext(
-            user_name="eval", tenant="all",
+            user_name="eval",
+            tenant="all",
             access_groups=case.get("access_groups", ["public"]),
         )
         filters = RetrievalFilter(
@@ -75,15 +74,22 @@ def run_strategy(retriever, cases: list[dict], strategy: str, k: int) -> dict[st
 
         started = time.perf_counter()
         results, _ = retriever.retrieve(
-            case["query"], strategy=strategy, user=user,
-            limit=k, filters=filters, expand_parents=False,
+            case["query"],
+            strategy=strategy,
+            user=user,
+            limit=k,
+            filters=filters,
+            expand_parents=False,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000
 
         evaluation = evaluate_query(
-            query_id=case["id"], query=case["query"],
+            query_id=case["id"],
+            query=case["query"],
             relevant_docs=case.get("relevant_docs", []),
-            results=results, k=k, category=case.get("category", ""),
+            results=results,
+            k=k,
+            category=case.get("category", ""),
             forbidden_docs=case.get("must_not_retrieve", []),
             latency_ms=elapsed_ms,
         )
@@ -93,22 +99,28 @@ def run_strategy(retriever, cases: list[dict], strategy: str, k: int) -> dict[st
         recall.append(evaluation.recall_at_k)
         hits.append(1.0 if evaluation.hit else 0.0)
         latency.append(elapsed_ms)
-        per_case.append({
-            "id": case["id"],
-            "ndcg": evaluation.ndcg_at_k,
-            "hit": evaluation.hit,
-            "rank": evaluation.first_relevant_rank,
-            "overlap_band": case.get("overlap_band", ""),
-            "filter_ok": evaluation.filter_correct,
-            # The passage this question was generated from. Questions sharing a
-            # source are not independent, so the clustered interval resamples
-            # by this key rather than by row.
-            "source_chunk_id": case.get("source_chunk_id", case["id"]),
-        })
+        per_case.append(
+            {
+                "id": case["id"],
+                "ndcg": evaluation.ndcg_at_k,
+                "hit": evaluation.hit,
+                "rank": evaluation.first_relevant_rank,
+                "overlap_band": case.get("overlap_band", ""),
+                "filter_ok": evaluation.filter_correct,
+                # The passage this question was generated from. Questions sharing a
+                # source are not independent, so the clustered interval resamples
+                # by this key rather than by row.
+                "source_chunk_id": case.get("source_chunk_id", case["id"]),
+            }
+        )
 
     return {
-        "ndcg": ndcg, "mrr": reciprocal, "recall": recall,
-        "hit": hits, "latency": latency, "per_case": per_case,
+        "ndcg": ndcg,
+        "mrr": reciprocal,
+        "recall": recall,
+        "hit": hits,
+        "latency": latency,
+        "per_case": per_case,
         "clusters": [c["source_chunk_id"] for c in per_case],
     }
 
@@ -120,8 +132,11 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--resamples", type=int, default=10000)
     parser.add_argument("--strategies", default=",".join(STRATEGIES))
-    parser.add_argument("--ablations", action="store_true",
-                        help="also measure the contribution of individual components")
+    parser.add_argument(
+        "--ablations",
+        action="store_true",
+        help="also measure the contribution of individual components",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -129,8 +144,10 @@ def main() -> int:
 
     eval_file = args.eval_file
     if eval_file is None:
-        eval_file = ROOT / "evals" / (
-            "document_rag_holdout.jsonl" if args.holdout else "document_rag.jsonl"
+        eval_file = (
+            ROOT
+            / "evals"
+            / ("document_rag_holdout.jsonl" if args.holdout else "document_rag.jsonl")
         )
 
     from enterprise_copilot.config import get_settings
@@ -180,13 +197,17 @@ def main() -> int:
     intervals: dict[str, dict] = {}
     for strategy in strategies:
         data = outcomes[strategy]
-        row = {metric: bootstrap_mean(data[metric], resamples=args.resamples)
-               for metric in ("ndcg", "mrr", "recall")}
+        row = {
+            metric: bootstrap_mean(data[metric], resamples=args.resamples)
+            for metric in ("ndcg", "mrr", "recall")
+        }
         intervals[strategy] = row
-        print(f"{strategy:<11}"
-              f"{row['ndcg'].format():>24}"
-              f"{row['mrr'].format():>24}"
-              f"{row['recall'].format():>24}")
+        print(
+            f"{strategy:<11}"
+            f"{row['ndcg'].format():>24}"
+            f"{row['mrr'].format():>24}"
+            f"{row['recall'].format():>24}"
+        )
 
     print(f"\n{'strategy':<11}{'mean ms':>10}{'median ms':>12}")
     print("-" * 33)
@@ -213,13 +234,14 @@ def main() -> int:
         print("  " + "-" * 63)
         for strategy in strategies:
             honest = clustered_bootstrap_mean(
-                outcomes[strategy]["ndcg"], outcomes[strategy]["clusters"],
+                outcomes[strategy]["ndcg"],
+                outcomes[strategy]["clusters"],
                 resamples=args.resamples,
             )
             clustered[strategy] = honest
-            print(f"  {strategy:<11}"
-                  f"{intervals[strategy]['ndcg'].format():>26}"
-                  f"{honest.format():>26}")
+            print(
+                f"  {strategy:<11}{intervals[strategy]['ndcg'].format():>26}{honest.format():>26}"
+            )
         print()
         print("  Widening is the correct behaviour here, not a regression. Narrowing")
         print("  it again needs more source documents, not more questions per passage.")
@@ -231,12 +253,16 @@ def main() -> int:
 
     comparisons = []
     for i, left in enumerate(strategies):
-        for right in strategies[i + 1:]:
-            comparisons.append(paired_bootstrap(
-                left, outcomes[left]["ndcg"],
-                right, outcomes[right]["ndcg"],
-                resamples=args.resamples,
-            ))
+        for right in strategies[i + 1 :]:
+            comparisons.append(
+                paired_bootstrap(
+                    left,
+                    outcomes[left]["ndcg"],
+                    right,
+                    outcomes[right]["ndcg"],
+                    resamples=args.resamples,
+                )
+            )
 
     corrected = holm_bonferroni(comparisons)
     for comparison, significant in corrected:
@@ -259,8 +285,7 @@ def main() -> int:
         print(f"    to detect +{effect:.2f} NDCG at 80 % power: ~{needed:>5} queries -> {verdict}")
 
     # ---------------- by leakage band ----------------
-    bands = [b for b in ("low", "medium", "high")
-             if any(c.get("overlap_band") == b for c in cases)]
+    bands = [b for b in ("low", "medium", "high") if any(c.get("overlap_band") == b for c in cases)]
     if bands:
         print("\n" + "=" * 96)
         print("  NDCG BY LEXICAL OVERLAP BAND (with intervals)")
@@ -282,7 +307,7 @@ def main() -> int:
 
     # ---------------- persist ----------------
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     payload = {
         "generated_at_utc": stamp,
         "eval_file": eval_file.name,
@@ -291,16 +316,23 @@ def main() -> int:
         "resamples": args.resamples,
         "embedding_model": settings.embedding_model,
         "intervals": {
-            s: {m: {"mean": i.mean, "lower": i.lower, "upper": i.upper}
-                for m, i in intervals[s].items()}
+            s: {
+                m: {"mean": i.mean, "lower": i.lower, "upper": i.upper}
+                for m, i in intervals[s].items()
+            }
             for s in strategies
         },
         "comparisons": [
             {
-                "a": c.name_a, "b": c.name_b, "difference": c.difference,
-                "ci": [c.ci_lower, c.ci_upper], "p_value": c.p_value,
+                "a": c.name_a,
+                "b": c.name_b,
+                "difference": c.difference,
+                "ci": [c.ci_lower, c.ci_upper],
+                "p_value": c.p_value,
                 "relative_percent": c.relative_percent,
-                "wins": c.wins, "losses": c.losses, "ties": c.ties,
+                "wins": c.wins,
+                "losses": c.losses,
+                "ties": c.ties,
                 "significant_raw": c.is_significant,
                 "significant_holm": sig,
             }
@@ -311,8 +343,7 @@ def main() -> int:
         # adaptive reranking policy, so it belongs in the record, not just in
         # the printout.
         "clustered_intervals": {
-            name: {"mean": i.mean, "lower": i.lower, "upper": i.upper,
-                   "clusters": i.n}
+            name: {"mean": i.mean, "lower": i.lower, "upper": i.upper, "clusters": i.n}
             for name, i in clustered.items()
         },
         "latency_ms": {
@@ -378,10 +409,12 @@ def run_ablations(settings, cases: list[dict], args) -> None:
         comparison = paired_bootstrap(
             baseline_label, results[baseline_label], label, values, resamples=4000
         )
-        print(f"    {label:<32} {comparison.difference:+.4f} "
-              f"[{comparison.ci_lower:+.4f}, {comparison.ci_upper:+.4f}] "
-              f"p={comparison.p_value:.3f} -> "
-              f"{'matters' if comparison.is_significant else 'no measurable effect'}")
+        print(
+            f"    {label:<32} {comparison.difference:+.4f} "
+            f"[{comparison.ci_lower:+.4f}, {comparison.ci_upper:+.4f}] "
+            f"p={comparison.p_value:.3f} -> "
+            f"{'matters' if comparison.is_significant else 'no measurable effect'}"
+        )
 
 
 if __name__ == "__main__":

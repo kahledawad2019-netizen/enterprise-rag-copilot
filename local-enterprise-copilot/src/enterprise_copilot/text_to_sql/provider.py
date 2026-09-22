@@ -23,7 +23,6 @@ own SQL could approve its own SQL.
 from __future__ import annotations
 
 import logging
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -121,7 +120,8 @@ class TextToSQLProvider(ABC):
             remaining = validate_against_schema(repaired, generated.context, catalog)
             generated.sql = repaired
             generated.warnings.append(
-                "SQL was repaired automatically" if not remaining
+                "SQL was repaired automatically"
+                if not remaining
                 else "repair attempted but problems remain: " + "; ".join(remaining)
             )
         return generated
@@ -131,24 +131,29 @@ class TextToSQLProvider(ABC):
         from .native import REPAIR_PROMPT, SYSTEM_PROMPT, extract_sql
 
         try:
-            import ollama
+            from ..llm import build_chat_client
 
-            client = ollama.Client(
-                self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-            )
+            client = build_chat_client(self.settings)
             response = client.chat(
                 model=self.settings.chat_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": REPAIR_PROMPT.format(
-                        sql=sql, problems=chr(10).join(f"- {p}" for p in problems))},
+                    {
+                        "role": "user",
+                        "content": REPAIR_PROMPT.format(
+                            sql=sql, problems=chr(10).join(f"- {p}" for p in problems)
+                        ),
+                    },
                 ],
-                options={"temperature": 0.0, "num_predict": 600,
-                         "num_ctx": self.settings.profile.chat_context_tokens},
+                options={
+                    "temperature": 0.0,
+                    "num_predict": 600,
+                    "num_ctx": self.settings.profile.chat_context_tokens,
+                },
                 keep_alive=self.settings.ollama.keep_alive,
             )
             return extract_sql(response["message"]["content"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("SQL repair attempt failed: %s", exc)
             return ""
 
@@ -201,6 +206,30 @@ def build_provider(
 
         return NativeTextToSQLProvider(settings)
 
+    if requested in ("vanna_cloud", "vanna-cloud"):
+        # Falls back the same way the local provider does, but the reason is
+        # reported precisely: "no API key" and "vanna not installed" need
+        # different fixes, and a single generic warning sends people to the
+        # wrong one.
+        try:
+            from .vanna_cloud_provider import (
+                VannaCloudNotConfiguredError,
+                VannaCloudTextToSQLProvider,
+            )
+
+            return VannaCloudTextToSQLProvider(settings)
+        except VannaCloudNotConfiguredError as exc:
+            log.warning("Vanna Cloud is not configured (%s); using the native provider.", exc)
+        except ImportError as exc:
+            log.warning(
+                "Vanna is unavailable (%s); using the native provider. "
+                'Install it with: pip install -e ".[vanna]"',
+                exc,
+            )
+        from .native import NativeTextToSQLProvider
+
+        return NativeTextToSQLProvider(settings)
+
     try:
         from .vanna_provider import VannaTextToSQLProvider
 
@@ -208,7 +237,8 @@ def build_provider(
     except ImportError as exc:
         log.warning(
             "Vanna is unavailable (%s); using the native provider. "
-            'Install it with: pip install -e ".[vanna]"', exc,
+            'Install it with: pip install -e ".[vanna]"',
+            exc,
         )
         from .native import NativeTextToSQLProvider
 
@@ -216,5 +246,8 @@ def build_provider(
 
 
 __all__ = [
-    "GeneratedSQL", "SQLRequest", "TextToSQLProvider", "build_provider",
+    "GeneratedSQL",
+    "SQLRequest",
+    "TextToSQLProvider",
+    "build_provider",
 ]

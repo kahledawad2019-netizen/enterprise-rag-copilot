@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "copilot-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5173,
+      "cwd": "cloud/ui"
+    },
+    {
+      "name": "copilot-ui-live",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5173,
+      "cwd": "cloud/ui",
+      "env": {
+        "COPILOT_API": "http://127.0.0.1:8000",
+        "COPILOT_API_NOTE": "export BACKEND_TOKEN in your shell before starting; it is never stored here"
+      }
+    }
+  ]
+}

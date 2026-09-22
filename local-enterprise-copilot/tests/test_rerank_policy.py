@@ -52,8 +52,11 @@ class TestPolicyOverrides:
         """The escape hatch must ignore every confidence signal."""
         fused = [scored("a", 0.0164), scored("b", 0.0161)]
         decision = decide(
-            "INC-2025-0042 impact", fused,
-            dense=fused, sparse=fused, policy=RerankPolicy.ALWAYS,
+            "INC-2025-0042 impact",
+            fused,
+            dense=fused,
+            sparse=fused,
+            policy=RerankPolicy.ALWAYS,
         )
         assert decision.should_rerank
 
@@ -63,8 +66,7 @@ class TestPolicyOverrides:
 
 class TestExactIdentifier:
     def test_identifier_present_in_top_result_skips(self) -> None:
-        fused = [scored("a", 0.0164, "Incident INC-2025-0042 root cause"),
-                 scored("b", 0.0161)]
+        fused = [scored("a", 0.0164, "Incident INC-2025-0042 root cause"), scored("b", 0.0161)]
         decision = decide("What caused INC-2025-0042?", fused)
         assert not decision.should_rerank
         assert "INC-2025-0042" in decision.reason

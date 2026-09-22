@@ -33,17 +33,25 @@ def load_reference_data(conn) -> dict:
         return [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
 
     reference = {
-        "tenants": rows("SELECT tenant_id, tenant_code, tenant_name, region, "
-                        "default_currency, time_zone FROM core.tenants ORDER BY tenant_id"),
-        "products": rows("SELECT product_id, product_code, product_name, product_family "
-                         "FROM core.products ORDER BY product_id"),
-        "plans": rows("SELECT plan_id, product_id, plan_code, plan_name, tier, "
-                      "billing_interval, list_price_monthly, seats_included "
-                      "FROM core.plans ORDER BY plan_id"),
-        "sla_policies": rows("SELECT sla_policy_id, policy_code, plan_tier, priority, "
-                             "first_response_minutes, resolution_minutes, version, "
-                             "effective_from, effective_to FROM support.sla_policies "
-                             "ORDER BY effective_from DESC, sla_policy_id"),
+        "tenants": rows(
+            "SELECT tenant_id, tenant_code, tenant_name, region, "
+            "default_currency, time_zone FROM core.tenants ORDER BY tenant_id"
+        ),
+        "products": rows(
+            "SELECT product_id, product_code, product_name, product_family "
+            "FROM core.products ORDER BY product_id"
+        ),
+        "plans": rows(
+            "SELECT plan_id, product_id, plan_code, plan_name, tier, "
+            "billing_interval, list_price_monthly, seats_included "
+            "FROM core.plans ORDER BY plan_id"
+        ),
+        "sla_policies": rows(
+            "SELECT sla_policy_id, policy_code, plan_tier, priority, "
+            "first_response_minutes, resolution_minutes, version, "
+            "effective_from, effective_to FROM support.sla_policies "
+            "ORDER BY effective_from DESC, sla_policy_id"
+        ),
     }
 
     missing = [name for name, values in reference.items() if not values]
@@ -85,15 +93,19 @@ def main() -> int:
 
     print("=" * 78)
     print("  Synthetic data generation - Northwind Cloud")
-    print(f"  seed={settings.random_seed}  profile={'demo' if args.demo else 'full'}  "
-          f"target customers={volumes.customers}")
+    print(
+        f"  seed={settings.random_seed}  profile={'demo' if args.demo else 'full'}  "
+        f"target customers={volumes.customers}"
+    )
     print("=" * 78)
 
     with raw_connection(settings) as conn:
         reference = load_reference_data(conn)
-        print(f"Reference data: {len(reference['tenants'])} tenants, "
-              f"{len(reference['products'])} products, {len(reference['plans'])} plans, "
-              f"{len(reference['sla_policies'])} SLA policy rows")
+        print(
+            f"Reference data: {len(reference['tenants'])} tenants, "
+            f"{len(reference['products'])} products, {len(reference['plans'])} plans, "
+            f"{len(reference['sla_policies'])} SLA policy rows"
+        )
 
         started = time.perf_counter()
         generator = SyntheticGenerator(settings, volumes, reference)

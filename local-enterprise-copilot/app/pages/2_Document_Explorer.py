@@ -17,7 +17,10 @@ st.set_page_config(page_title="Document Explorer", page_icon="::", layout="wide"
 from _shared import sidebar  # noqa: E402
 
 from enterprise_copilot.config import get_settings  # noqa: E402
-from enterprise_copilot.ingestion.chunking import ChunkingConfig, StructureAwareChunker  # noqa: E402
+from enterprise_copilot.ingestion.chunking import (  # noqa: E402
+    ChunkingConfig,
+    StructureAwareChunker,
+)
 from enterprise_copilot.ingestion.parsers import ParserRegistry  # noqa: E402
 
 
@@ -33,24 +36,26 @@ def load_documents() -> list[dict]:
     for path in sorted(settings.documents_dir.glob("*.md")):
         document = registry.parse(path)
         metadata = document.metadata
-        rows.append({
-            "doc_id": metadata.doc_id,
-            "title": metadata.title,
-            "type": str(metadata.doc_type),
-            "version": metadata.version,
-            "status": str(metadata.status),
-            "authority": str(metadata.authority),
-            "effective": metadata.effective_date.isoformat(),
-            "access_group": metadata.access_group,
-            "tenant": metadata.tenant,
-            "sections": len(document.sections),
-            "chunks": len(chunker.chunk_document(document)),
-            "words": len(document.text.split()),
-            "supersedes": metadata.supersedes or "",
-            "superseded_by": metadata.superseded_by or "",
-            "_text": document.text,
-            "_path": str(path.name),
-        })
+        rows.append(
+            {
+                "doc_id": metadata.doc_id,
+                "title": metadata.title,
+                "type": str(metadata.doc_type),
+                "version": metadata.version,
+                "status": str(metadata.status),
+                "authority": str(metadata.authority),
+                "effective": metadata.effective_date.isoformat(),
+                "access_group": metadata.access_group,
+                "tenant": metadata.tenant,
+                "sections": len(document.sections),
+                "chunks": len(chunker.chunk_document(document)),
+                "words": len(document.text.split()),
+                "supersedes": metadata.supersedes or "",
+                "superseded_by": metadata.superseded_by or "",
+                "_text": document.text,
+                "_path": str(path.name),
+            }
+        )
     return rows
 
 
@@ -67,7 +72,7 @@ def main() -> None:
     columns = st.columns(4)
     columns[0].metric("Documents", len(documents))
     columns[1].metric("Chunks", int(frame["chunks"].sum()))
-    columns[2].metric("Words", f'{int(frame["words"].sum()):,}')
+    columns[2].metric("Words", f"{int(frame['words'].sum()):,}")
     columns[3].metric("Superseded", int((frame["status"] == "superseded").sum()))
 
     st.subheader("Deliberate conflicts")

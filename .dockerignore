@@ -1,0 +1,34 @@
+# The backend image is built from the repository root, but it needs only four
+# source trees.  A whitelist keeps real .env files, copied virtualenvs, Git
+# history, local indexes, traces and the legacy prototype out of the build
+# context (including remote builder uploads and cached image layers).
+**
+
+!cloud/
+cloud/**
+!cloud/api/
+!cloud/api/**
+
+!local-enterprise-copilot/
+local-enterprise-copilot/**
+!local-enterprise-copilot/src/
+!local-enterprise-copilot/src/**
+!local-enterprise-copilot/data/
+local-enterprise-copilot/data/**
+!local-enterprise-copilot/data/documents/
+!local-enterprise-copilot/data/documents/**
+!local-enterprise-copilot/evals/
+local-enterprise-copilot/evals/**
+!local-enterprise-copilot/evals/baselines/
+!local-enterprise-copilot/evals/baselines/**
+!local-enterprise-copilot/sql/
+!local-enterprise-copilot/sql/**
+
+# Never re-include generated or secret material if a future whitelist changes.
+**/.env
+**/.env.*
+**/.dev.vars*
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.streamlit/secrets.toml

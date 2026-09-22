@@ -32,16 +32,22 @@ def violations_of(result) -> set[Violation]:
 class TestRepairsThatMustHappen:
     """Each of these was a refusal the user experienced as a failure."""
 
-    @pytest.mark.parametrize(("label", "sql"), [
-        ("no WHERE at all", "SELECT COUNT(*) FROM support.tickets"),
-        ("existing WHERE", "SELECT COUNT(*) FROM support.tickets WHERE status = 'open'"),
-        ("GROUP BY",
-         "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region"),
-        ("ORDER BY",
-         "SELECT customer_name FROM analytics.vw_customer_360 ORDER BY current_arr DESC"),
-        ("aggregate over a base table",
-         "SELECT SUM(total_amount) FROM billing.invoices WHERE status = 'paid'"),
-    ])
+    @pytest.mark.parametrize(
+        ("label", "sql"),
+        [
+            ("no WHERE at all", "SELECT COUNT(*) FROM support.tickets"),
+            ("existing WHERE", "SELECT COUNT(*) FROM support.tickets WHERE status = 'open'"),
+            ("GROUP BY", "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region"),
+            (
+                "ORDER BY",
+                "SELECT customer_name FROM analytics.vw_customer_360 ORDER BY current_arr DESC",
+            ),
+            (
+                "aggregate over a base table",
+                "SELECT SUM(total_amount) FROM billing.invoices WHERE status = 'paid'",
+            ),
+        ],
+    )
     def test_missing_predicate_is_injected(self, guard: SQLGuard, label: str, sql: str) -> None:
         result = guard.validate(sql, tenant_id=1)
         assert result.is_safe, f"{label} still blocked: {result.reason}"
@@ -57,6 +63,17 @@ class TestRepairsThatMustHappen:
         )
         assert result.is_safe, result.reason
         assert "c.tenant_id = 1" in result.effective_sql
+        assert "r.tenant_id = 1" in result.effective_sql
+
+    def test_every_tenant_scoped_join_relation_is_filtered(self, guard: SQLGuard) -> None:
+        result = guard.validate(
+            "SELECT c.customer_name, t.ticket_id FROM core.customers c "
+            "JOIN support.tickets t ON t.customer_id = c.customer_id",
+            tenant_id=1,
+        )
+        assert result.is_safe, result.reason
+        assert "c.tenant_id = 1" in result.effective_sql
+        assert "t.tenant_id = 1" in result.effective_sql
 
     def test_cte_body_is_repaired_not_the_outer_select(self, guard: SQLGuard) -> None:
         """The CTE body reads the real table, so that is where the predicate belongs."""
@@ -102,6 +119,30 @@ class TestRepairsThatMustNotHappen:
         assert not result.is_safe
         assert not result.tenant_injected
 
+    @pytest.mark.parametrize(
+        "predicate",
+        [
+            "tenant_id = 1 OR 1 = 1",
+            "tenant_id = 1 OR tenant_id = 2",
+            "NOT tenant_id = 2",
+        ],
+    )
+    def test_boolean_bypasses_stay_blocked(self, guard: SQLGuard, predicate: str) -> None:
+        result = guard.validate(
+            "SELECT customer_name FROM analytics.vw_customer_360 WHERE " + predicate,
+            tenant_id=1,
+        )
+        assert not result.is_safe
+        assert Violation.CROSS_TENANT in violations_of(result)
+        assert not result.tenant_injected
+
+    def test_missing_verified_tenant_context_stays_blocked(self, guard: SQLGuard) -> None:
+        result = guard.validate(
+            "SELECT customer_name FROM analytics.vw_customer_360 WHERE tenant_id = 1"
+        )
+        assert not result.is_safe
+        assert Violation.MISSING_TENANT_FILTER in violations_of(result)
+
     def test_forbidden_schema_is_not_rescued(self, guard: SQLGuard) -> None:
         """Repair applies only when the tenant predicate is the ONLY problem."""
         result = guard.validate("SELECT * FROM ai.audit_events", tenant_id=1)
@@ -146,19 +187,22 @@ class TestRepairsThatMustNotHappen:
 class TestInjectedSQLIsValid:
     """A rewrite that produces invalid SQL is worse than no rewrite."""
 
-    @pytest.mark.parametrize("sql", [
-        "SELECT COUNT(*) FROM support.tickets",
-        "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region",
-        "SELECT c.customer_name FROM analytics.vw_customer_360 c "
-        "JOIN analytics.vw_customer_risk r ON r.customer_id = c.customer_id",
-        "WITH t AS (SELECT customer_id FROM core.customers) SELECT COUNT(*) FROM t",
-    ])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT COUNT(*) FROM support.tickets",
+            "SELECT region, COUNT(*) FROM analytics.vw_customer_360 GROUP BY region",
+            "SELECT c.customer_name FROM analytics.vw_customer_360 c "
+            "JOIN analytics.vw_customer_risk r ON r.customer_id = c.customer_id",
+            "WITH t AS (SELECT customer_id FROM core.customers) SELECT COUNT(*) FROM t",
+        ],
+    )
     def test_result_reparses_as_tsql(self, guard: SQLGuard, sql: str) -> None:
         import sqlglot
 
         result = guard.validate(sql, tenant_id=1)
         assert result.is_safe
-        sqlglot.parse_one(result.effective_sql, read="tsql")   # raises on invalid SQL
+        sqlglot.parse_one(result.effective_sql, read="tsql")  # raises on invalid SQL
 
     def test_repaired_query_revalidates_clean(self, guard: SQLGuard) -> None:
         """Feeding the rewrite back through the guard must produce no violations."""
@@ -179,18 +223,22 @@ class TestInjectedSQLExecutes:
 
         try:
             instance = ReadOnlyRunner()
-            instance.run("SELECT TOP 1 tenant_id FROM core.customers WHERE tenant_id = 1",
-                         tenant_id=1)
+            instance.run(
+                "SELECT TOP 1 tenant_id FROM core.customers WHERE tenant_id = 1", tenant_id=1
+            )
         except Exception as exc:
             pytest.skip(f"database unavailable: {exc}")
         return instance
 
-    @pytest.mark.parametrize("sql", [
-        "SELECT COUNT(*) AS open_tickets FROM support.tickets WHERE status = 'open'",
-        "SELECT region, COUNT(*) AS n FROM analytics.vw_customer_360 GROUP BY region",
-        "SELECT c.customer_name FROM analytics.vw_customer_360 c "
-        "JOIN analytics.vw_customer_risk r ON r.customer_id = c.customer_id",
-    ])
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT COUNT(*) AS open_tickets FROM support.tickets WHERE status = 'open'",
+            "SELECT region, COUNT(*) AS n FROM analytics.vw_customer_360 GROUP BY region",
+            "SELECT c.customer_name FROM analytics.vw_customer_360 c "
+            "JOIN analytics.vw_customer_risk r ON r.customer_id = c.customer_id",
+        ],
+    )
     def test_executes_after_repair(self, runner, sql: str) -> None:
         result = runner.run(sql, tenant_id=1, app_user="pytest")
         assert result.row_count >= 0
@@ -198,8 +246,6 @@ class TestInjectedSQLExecutes:
 
     def test_repair_restricts_to_the_callers_tenant(self, runner) -> None:
         """The whole point: the rows returned belong to tenant 1 only."""
-        result = runner.run(
-            "SELECT DISTINCT tenant_id FROM analytics.vw_customer_360", tenant_id=1
-        )
+        result = runner.run("SELECT DISTINCT tenant_id FROM analytics.vw_customer_360", tenant_id=1)
         tenants = {row["tenant_id"] for row in result.rows}
         assert tenants == {1}, f"repair leaked other tenants: {tenants}"
