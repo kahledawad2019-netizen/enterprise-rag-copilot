@@ -147,6 +147,63 @@ class OllamaSettings(BaseSettings):
     embedding_model: str | None = None
 
 
+class VannaCloudSettings(BaseSettings):
+    """Vanna Cloud (ask.vanna.ai) configuration.
+
+    **This is the one component in the system that sends data off the
+    machine.** Read `docs/vanna_cloud.md` before enabling it. In summary:
+
+    * ``mode="hybrid"`` keeps generation local. Vanna Cloud holds the training
+      corpus - DDL, the business glossary and the approved SQL examples - and
+      answers retrieval requests. Questions are sent, because retrieval needs
+      the question. Query *results* never are.
+    * ``mode="cloud"`` additionally sends the assembled prompt to Vanna's
+      hosted model. Nothing about the database rows leaves either way, but the
+      schema and the question both do.
+
+    Unset ``api_key`` disables the provider entirely, which is the default.
+    The project's local Vanna and native providers are unaffected.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_prefix="VANNA_", extra="ignore",
+        env_file_encoding="utf-8", case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    api_key: SecretStr | None = None
+
+    # The model name as it appears in the Vanna dashboard. Vanna calls a
+    # training corpus a "model", which is confusing next to an LLM: this names
+    # the corpus, not the language model.
+    model: str = "enterprise-copilot"
+
+    endpoint: str = "https://ask.vanna.ai/rpc"
+    mode: Literal["hybrid", "cloud"] = "hybrid"
+
+    # Vanna can be told to feed query results back into the prompt to refine a
+    # follow-up. That would send actual customer rows to a third party, so it
+    # is off, and `docs/security.md` states that it is off.
+    allow_llm_to_see_data: bool = False
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        """`VANNA_API_KEY=` must mean absent, not an empty key.
+
+        The same mistake was found and fixed for MSSQL_PASSWORD in phase 1: an
+        empty SecretStr is truthy enough to pass an `is not None` check and
+        then fails much later, somewhere unhelpful.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_configured(self) -> bool:
+        return self.api_key is not None
+
+
 class VectorStoreSettings(BaseSettings):
     """Qdrant configuration.
 
@@ -301,6 +358,7 @@ class Settings(BaseSettings):
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    vanna_cloud: VannaCloudSettings = Field(default_factory=VannaCloudSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
@@ -370,7 +428,8 @@ def reset_settings_cache() -> None:
 
 
 __all__ = [
-    "Settings", "DatabaseSettings", "OllamaSettings", "VectorStoreSettings",
-    "RetrievalSettings", "ObservabilitySettings", "SecuritySettings",
+    "Settings", "DatabaseSettings", "OllamaSettings", "VannaCloudSettings",
+    "VectorStoreSettings", "RetrievalSettings", "ObservabilitySettings",
+    "SecuritySettings",
     "get_settings", "reset_settings_cache", "PROJECT_ROOT", "KEYRING_SERVICE",
 ]

@@ -1,0 +1,257 @@
+# Cloudflare deployment
+
+Deploys the Enterprise Intelligence Copilot as a public service: a React UI on
+Cloudflare Pages, an API gateway on Cloudflare Workers, and the existing Python
+brain in a container.
+
+---
+
+## Why it is shaped this way
+
+Cloudflare Workers run V8 isolates — JavaScript, TypeScript and WASM, plus a
+restricted Python via Pyodide. The copilot needs Streamlit (a long-lived
+server with websockets), a native database driver, a local inference runtime,
+an embedded vector store, and optionally PyTorch. **None of those run on
+Workers.** Cloudflare Hyperdrive supports Postgres and MySQL, not SQL Server.
+
+So the split is: Cloudflare owns everything at the edge — the UI, TLS,
+caching, identity, rate limiting, and the only public entry point — and the
+Python that already exists and is already tested runs unchanged in a
+container behind it.
+
+```
+     browser
+        │  https://copilot.example.com
+        ▼
+ ┌──────────────────────┐
+ │ Cloudflare Pages     │   React 19 + Vite, static assets on the CDN
+ └──────────┬───────────┘
+            │  /api/*  (same origin, so no CORS preflight)
+            ▼
+ ┌──────────────────────┐   CORS allow-list · Access JWT verification
+ │ Cloudflare Worker    │   rate limit · 64 KB body cap · streaming proxy
+ └──────────┬───────────┘   holds BACKEND_TOKEN; the browser never sees it
+            │  https + bearer token
+            ▼
+ ┌──────────────────────┐   FastAPI → the existing Copilot orchestrator:
+ │ Backend container    │   router · hybrid retrieval · text-to-SQL ·
+ │ (Fly / Render / CF)  │   sqlglot guard · read-only runner · tracing
+ └───┬──────────┬───────┘
+     │          │
+     ▼          ▼
+  Postgres   Vanna Cloud          (see docs/vanna_cloud.md before enabling)
+  (Neon)     text-to-SQL
+```
+
+The container is the only thing that can reach the database. It has a public
+URL, and the bearer token is what keeps it private — which is why
+`BACKEND_TOKEN` is not optional and the app refuses to serve without it.
+
+---
+
+## What is built and what is not
+
+| Piece | State |
+|---|---|
+| `worker/` — API gateway | **Built.** Typechecks clean. Not yet deployed. |
+| `ui/` — Pages front end | **Built.** Builds to 75 KB gzipped. Driven end to end against the mock. |
+| `ui/mock/` — dev backend | **Built.** Working. |
+| `api/` — FastAPI adapter | **Built.** Not yet run against a live copilot. |
+| `api/Dockerfile` | **Written.** Not yet built — there is no Docker on this machine. |
+| Vanna Cloud provider | **Built and wired.** Needs your API key. |
+| Postgres migration | **Not done.** See below. |
+
+### The Postgres migration is the remaining blocker
+
+The database layer is SQL Server throughout: 2,198 lines of T-SQL across eight
+scripts with ~246 dialect-specific constructs (`IDENTITY`, `NVARCHAR`,
+`DATETIME2`, `GETDATE()`, `TOP (n)`, bracket-quoted identifiers), plus
+`pyodbc` in `database/connection.py`, `DIALECT = "tsql"` in the SQL guard,
+and T-SQL in the schema retriever's catalog queries.
+
+This cannot be verified on this machine — there is no Docker and no local
+Postgres — so it will be translated with `sqlglot` and checked mechanically,
+then confirmed against your Neon instance once it exists. Writing 2,000 lines
+of untested DDL and calling it done would not be an honest deliverable.
+
+---
+
+## Prerequisites
+
+- A Cloudflare account (free tier is enough to start).
+- Node 20+ and npm. This machine has Node 24.16.0.
+- A container host: [Fly.io](https://fly.io), [Render](https://render.com), or
+  Cloudflare Containers (needs a Workers paid plan).
+- A [Neon](https://neon.tech) Postgres database (free tier).
+- A [Vanna](https://vanna.ai) API key, if you want Vanna Cloud.
+
+`wrangler` is not installed globally; every command below runs it through
+`npx`, which uses the version pinned in each `package.json`.
+
+---
+
+## 1. Authenticate
+
+```bash
+npx wrangler login
+```
+
+This opens a browser. It cannot be run from a non-interactive session, so do
+it yourself before the deploy steps.
+
+Confirm it worked:
+
+```bash
+npx wrangler whoami
+```
+
+## 2. Deploy the backend container
+
+From the **repository root**, not from `cloud/api/` — the image needs both
+directories:
+
+```bash
+docker build -f cloud/api/Dockerfile -t copilot-api .
+```
+
+Then, on Fly:
+
+```bash
+fly launch --no-deploy --name copilot-api
+```
+
+```bash
+fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" DATABASE_URL="postgres://..." VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud
+```
+
+```bash
+fly deploy
+```
+
+Keep the `BACKEND_TOKEN` value — the Worker needs the same string.
+
+Check it is up. This should return 401, which proves both that the service is
+running and that it refuses unauthenticated callers:
+
+```bash
+curl -i https://copilot-api.fly.dev/meta
+```
+
+## 3. Deploy the Worker
+
+Edit `cloud/worker/wrangler.toml` and set `BACKEND_URL` to the container's URL
+and `ALLOWED_ORIGINS` to your Pages domain.
+
+```bash
+cd cloud/worker && npm install && npx wrangler secret put BACKEND_TOKEN
+```
+
+Paste the same token when prompted. Then:
+
+```bash
+cd cloud/worker && npx wrangler deploy
+```
+
+## 4. Deploy the UI
+
+```bash
+cd cloud/ui && npm install && npm run build
+```
+
+```bash
+cd cloud/ui && npx wrangler pages deploy dist --project-name copilot-ui
+```
+
+## 5. Put them on one hostname
+
+The UI calls `/api/*` as a relative path, so the Worker must answer on the same
+hostname as the Pages site. In the Cloudflare dashboard, add a Worker route:
+
+```
+copilot.example.com/api/*  →  copilot-api
+```
+
+Same origin means no CORS preflight on every question, and no build-time API
+URL to get wrong between environments.
+
+## 6. Lock it down with Cloudflare Access
+
+Until this step, anyone with the URL can ask questions and spend your
+inference budget.
+
+1. Zero Trust → Access → Applications → Add a self-hosted application.
+2. Domain: `copilot.example.com`.
+3. Add a policy — e.g. allow emails ending `@yourcompany.com`.
+4. Copy the **Application Audience (AUD) tag**.
+5. Set both variables in `wrangler.toml` and redeploy the Worker:
+
+```toml
+ACCESS_AUD = "your-aud-tag"
+ACCESS_TEAM_DOMAIN = "yourteam.cloudflareaccess.com"
+```
+
+The Worker verifies the JWT signature against your team's JWKS. It does not
+trust the `CF-Access-Authenticated-User-Email` header on its own: a request
+that reaches the Worker without passing through Access can set any header it
+likes.
+
+---
+
+## Secrets reference
+
+Nothing in this table belongs in a file that git can see.
+
+| Name | Where it lives | Set with | What it is |
+|---|---|---|---|
+| `BACKEND_TOKEN` | Worker **and** container | `wrangler secret put` / `fly secrets set` | The shared secret that keeps the container private. Must match on both sides. |
+| `DATABASE_URL` | Container | `fly secrets set` | Postgres connection string from Neon. |
+| `VANNA_API_KEY` | Container | `fly secrets set` | Vanna Cloud key. Omit to stay local. |
+| `ACCESS_AUD` | Worker (`vars`) | `wrangler.toml` | Not secret — an identifier. |
+| `ACCESS_TEAM_DOMAIN` | Worker (`vars`) | `wrangler.toml` | Not secret. |
+
+Generate the backend token with `openssl rand -base64 32`, not by typing one.
+
+---
+
+## Developing locally
+
+Three terminals, no cloud account, no database:
+
+```bash
+cd cloud/ui && node mock/server.mjs
+```
+
+```bash
+cd cloud/ui && npm run dev
+```
+
+Open http://localhost:5173. Vite proxies `/api` to port 8787, where the mock
+answers with realistic fixtures — including an injected tenant predicate,
+conflicting policy versions, and a refusal.
+
+To run against the real backend instead of the mock:
+
+```bash
+cd cloud/api && BACKEND_TOKEN=dev-token python main.py
+```
+
+```bash
+cd cloud/worker && npx wrangler dev
+```
+
+`wrangler dev` listens on 8787, which is where Vite is already pointing.
+
+---
+
+## Cost
+
+| | Free tier | Notes |
+|---|---|---|
+| Pages | unlimited static requests | The UI costs nothing. |
+| Workers | 100k requests/day | The gateway is well inside this. |
+| Neon | 0.5 GB | The dataset is ~287k rows. |
+| Fly.io | ~$2–5/month | The only guaranteed cost. A free-tier alternative sleeps, and a cold start on this app is slow. |
+| Vanna Cloud | free tier | Check current limits. |
+
+The container is the expensive part, and it is expensive because it is the
+part that cannot be serverless.

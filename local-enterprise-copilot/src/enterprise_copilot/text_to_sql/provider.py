@@ -201,6 +201,29 @@ def build_provider(
 
         return NativeTextToSQLProvider(settings)
 
+    if requested in ("vanna_cloud", "vanna-cloud"):
+        # Falls back the same way the local provider does, but the reason is
+        # reported precisely: "no API key" and "vanna not installed" need
+        # different fixes, and a single generic warning sends people to the
+        # wrong one.
+        try:
+            from .vanna_cloud_provider import (
+                VannaCloudNotConfiguredError,
+                VannaCloudTextToSQLProvider,
+            )
+
+            return VannaCloudTextToSQLProvider(settings)
+        except VannaCloudNotConfiguredError as exc:
+            log.warning("Vanna Cloud is not configured (%s); using the native provider.", exc)
+        except ImportError as exc:
+            log.warning(
+                "Vanna is unavailable (%s); using the native provider. "
+                'Install it with: pip install -e ".[vanna]"', exc,
+            )
+        from .native import NativeTextToSQLProvider
+
+        return NativeTextToSQLProvider(settings)
+
     try:
         from .vanna_provider import VannaTextToSQLProvider
 
