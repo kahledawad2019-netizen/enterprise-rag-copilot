@@ -36,7 +36,7 @@
    every month, including months in which nothing happened -- otherwise a churn
    spike looks like missing data.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_month_spine
+CREATE OR REPLACE VIEW analytics.vw_month_spine
 AS
 WITH bounds AS (
     SELECT
@@ -69,7 +69,7 @@ FROM months;
      - trials are excluded (they are not paid revenue)
      - annual plans are already normalised to a monthly amount in mrr_amount
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_monthly_recurring_revenue
+CREATE OR REPLACE VIEW analytics.vw_monthly_recurring_revenue
 AS
 SELECT
     m.month_start,
@@ -100,7 +100,7 @@ GROUP BY
    Both are reported because they answer different questions: losing ten small
    customers and losing one large one are not the same event.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_churn_metrics
+CREATE OR REPLACE VIEW analytics.vw_churn_metrics
 AS
 SELECT
     m.month_start,
@@ -164,7 +164,7 @@ CROSS JOIN core.tenants AS t;
    not the current version -- judging a 2023 ticket by the 2025 SLA would be
    wrong, and is a mistake a schema-only prompt makes routinely.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_sla_performance
+CREATE OR REPLACE VIEW analytics.vw_sla_performance
 AS
 SELECT
     tk.ticket_id,
@@ -185,17 +185,17 @@ SELECT
     pol.version                             AS sla_version,
     pol.first_response_minutes              AS target_first_response_minutes,
     pol.resolution_minutes                  AS target_resolution_minutes,
-    (EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60)::int AS actual_first_response_minutes,
-    (EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60)::int       AS actual_resolution_minutes,
+    ((EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60))::int AS actual_first_response_minutes,
+    ((EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60))::int       AS actual_resolution_minutes,
     CASE
         WHEN tk.first_response_at_utc IS NULL THEN 1
-        WHEN (EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60)::int
+        WHEN ((EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60))::int
              > pol.first_response_minutes THEN 1
         ELSE 0
     END                                     AS first_response_breached,
     CASE
         WHEN tk.resolved_at_utc IS NULL THEN 0   -- unresolved is not yet a resolution breach
-        WHEN (EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60)::int
+        WHEN ((EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60))::int
              > pol.resolution_minutes THEN 1
         ELSE 0
     END                                     AS resolution_breached,
@@ -204,21 +204,23 @@ FROM support.tickets AS tk
 JOIN core.customers  AS c ON c.customer_id = tk.customer_id
 LEFT JOIN core.products AS p ON p.product_id = tk.product_id
 LEFT JOIN LATERAL (
-    SELECT TOP (1) sp.*
+    SELECT sp.*
     FROM support.sla_policies sp
     WHERE sp.priority = tk.priority
       AND sp.effective_from <= CAST(tk.opened_at_utc AS date)
       AND (sp.effective_to IS NULL OR sp.effective_to >= CAST(tk.opened_at_utc AS date))
       AND sp.plan_tier = (
-            SELECT TOP (1) pl.tier
+            SELECT pl.tier
             FROM core.subscriptions su
             JOIN core.plans pl ON pl.plan_id = su.plan_id
             WHERE su.customer_id = tk.customer_id
               AND su.started_on <= CAST(tk.opened_at_utc AS date)
               AND (su.ended_on IS NULL OR su.ended_on >= CAST(tk.opened_at_utc AS date))
             ORDER BY pl.list_price_monthly DESC
-      )
+    LIMIT 1
+)
     ORDER BY sp.effective_from DESC
+    LIMIT 1
 ) AS pol;
 
 /* ---------------------------------------------------------------------------
@@ -226,7 +228,7 @@ LEFT JOIN LATERAL (
    One row per customer with the facts an account manager asks for. Built to
    stop the model from writing a six-table join it will get subtly wrong.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_customer_360
+CREATE OR REPLACE VIEW analytics.vw_customer_360
 AS
 SELECT
     c.customer_id,
@@ -245,7 +247,7 @@ SELECT
     c.churn_date,
     c.status                                    AS customer_status,
     c.is_reactivated,
-    (EXTRACT(EPOCH FROM ((COALESCE(c.churn_date, CAST((NOW() - (c.signup_date))) / 86400)::int AT TIME ZONE 'utc') AS date))) AS tenure_days,
+    ((EXTRACT(EPOCH FROM ((COALESCE(c.churn_date, CAST((NOW() AT TIME ZONE 'utc') AS date))) - (c.signup_date))) / 86400))::int AS tenure_days,
     COALESCE(sub.active_subscriptions, 0)       AS active_subscriptions,
     CAST(COALESCE(sub.current_mrr, 0) AS DECIMAL(19,4))      AS current_mrr,
     CAST(COALESCE(sub.current_mrr, 0) * 12 AS DECIMAL(19,4)) AS current_arr,
@@ -297,13 +299,14 @@ LEFT JOIN LATERAL (
     SELECT AVG(CAST(u.active_users AS DECIMAL(10,2))) AS avg_active_users_30d
     FROM core.usage_daily u
     WHERE u.customer_id = c.customer_id
-      AND u.usage_date >= ((CAST((NOW() + INTERVAL '-30 day') AT TIME ZONE 'utc') AS date))
+      AND u.usage_date >= ((CAST((NOW() AT TIME ZONE 'utc') AS date)) + INTERVAL '-30 day')
 ) AS usg
 LEFT JOIN LATERAL (
-    SELECT TOP (1) h.health_score, h.risk_band, h.churn_risk_pct
+    SELECT h.health_score, h.risk_band, h.churn_risk_pct
     FROM analytics.customer_health h
     WHERE h.customer_id = c.customer_id
     ORDER BY h.snapshot_date DESC
+    LIMIT 1
 ) AS hlt;
 
 /* ---------------------------------------------------------------------------
@@ -312,7 +315,7 @@ LEFT JOIN LATERAL (
    support tickets" directly, using the glossary's at-risk definition rather
    than whatever the model would improvise.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_customer_risk
+CREATE OR REPLACE VIEW analytics.vw_customer_risk
 AS
 SELECT
     v.customer_id,
@@ -355,7 +358,7 @@ WHERE v.customer_status <> 'churned';
    postmortem document id carried through so the answer can cite the document
    corpus alongside the database facts.
    --------------------------------------------------------------------------- */
-CREATE OR ALTER VIEW analytics.vw_incident_impact
+CREATE OR REPLACE VIEW analytics.vw_incident_impact
 AS
 SELECT
     i.incident_id,
@@ -366,8 +369,8 @@ SELECT
     i.started_at_utc,
     i.detected_at_utc,
     i.resolved_at_utc,
-    (EXTRACT(EPOCH FROM ((i.resolved_at_utc) - (i.started_at_utc))) / 60)::int AS total_duration_minutes,
-    (EXTRACT(EPOCH FROM ((i.detected_at_utc) - (i.started_at_utc))) / 60)::int AS time_to_detect_minutes,
+    ((EXTRACT(EPOCH FROM ((i.resolved_at_utc) - (i.started_at_utc))) / 60))::int AS total_duration_minutes,
+    ((EXTRACT(EPOCH FROM ((i.detected_at_utc) - (i.started_at_utc))) / 60))::int AS time_to_detect_minutes,
     i.root_cause,
     i.postmortem_doc_id,
     i.affected_region,

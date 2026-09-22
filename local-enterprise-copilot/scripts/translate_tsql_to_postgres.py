@@ -249,6 +249,174 @@ def convert_conditional_insert(sql: str) -> str:
     return pattern.sub(fix, sql)
 
 
+def _split_args(text: str, start: int) -> tuple[list[str], int] | None:
+    """Read a balanced argument list beginning at `start` (the opening paren).
+
+    Returns the arguments and the index just past the closing paren, or None
+    if the parentheses never balance.
+
+    This exists because `[^)]+?` is wrong for any argument that contains
+    parentheses of its own, and these scripts are full of them:
+
+        DATEADD(DAY, -30, CAST(SYSUTCDATETIME() AS date))
+
+    A non-greedy stop-at-the-first-paren match captures
+    `CAST(SYSUTCDATETIME() AS date` and emits SQL whose parentheses do not
+    balance. That is worse than failing, because it is valid-looking text that
+    only the server rejects - which is exactly how it was found.
+
+    Quoted strings are skipped so a parenthesis inside a literal cannot
+    unbalance the scan.
+    """
+    if start >= len(text) or text[start] != "(":
+        return None
+
+    depth = 0
+    args: list[str] = []
+    current: list[str] = []
+    i = start
+    in_string = False
+
+    while i < len(text):
+        ch = text[i]
+
+        if in_string:
+            current.append(ch)
+            if ch == "'":
+                # '' is an escaped quote inside a string, not the end of one.
+                if i + 1 < len(text) and text[i + 1] == "'":
+                    current.append(text[i + 1])
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+            continue
+
+        if ch == "'":
+            in_string = True
+            current.append(ch)
+        elif ch == "(":
+            depth += 1
+            if depth > 1:
+                current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(current).strip())
+                return args, i + 1
+            current.append(ch)
+        elif ch == "," and depth == 1:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+
+    return None
+
+
+def _rewrite_calls(sql: str, name: str, build: object) -> str:
+    """Rewrite every call to `name(...)` using a balanced-paren scan.
+
+    `build` receives the argument list and returns the replacement text, or
+    None to leave the call untouched.
+    """
+    pattern = re.compile(rf"\b{name}\s*(?=\()", re.IGNORECASE)
+    out: list[str] = []
+    cursor = 0
+
+    while True:
+        match = pattern.search(sql, cursor)
+        if match is None:
+            out.append(sql[cursor:])
+            return "".join(out)
+
+        paren = sql.index("(", match.end() - 1)
+        parsed = _split_args(sql, paren)
+        if parsed is None:
+            out.append(sql[cursor:match.end()])
+            cursor = match.end()
+            continue
+
+        args, end = parsed
+        replacement = build(args)  # type: ignore[operator]
+        out.append(sql[cursor:match.start()])
+        out.append(replacement if replacement is not None else sql[match.start():end])
+        cursor = end
+
+
+def convert_create_or_alter(sql: str) -> str:
+    """CREATE OR ALTER -> CREATE OR REPLACE.
+
+    T-SQL 2016+ spells it ALTER; PostgreSQL spells it REPLACE. The semantics
+    match for views and functions, which is all these scripts use it for.
+    """
+    return re.sub(
+        r"\bCREATE\s+OR\s+ALTER\s+(VIEW|FUNCTION|PROCEDURE)\b",
+        r"CREATE OR REPLACE \1",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def convert_top(sql: str) -> str:
+    """SELECT TOP (n) ... -> SELECT ... LIMIT n.
+
+    TOP sits at the head of the projection and LIMIT at the tail of the
+    query, so this cannot be a substitution - the clause has to move. The
+    scan walks forward from the TOP, tracking parenthesis depth, and places
+    LIMIT at the end of the SELECT that owns it: either just before the
+    parenthesis that closes an enclosing subquery, or at the statement's
+    semicolon.
+
+    Depth tracking is what makes nesting work. 005 has a TOP (1) inside a
+    lateral subquery that itself contains another TOP (1) in a correlated
+    predicate; each has to receive its own LIMIT in its own place.
+    """
+    pattern = re.compile(r"\bSELECT\s+TOP\s*\(\s*(\d+)\s*\)\s*", re.IGNORECASE)
+
+    while True:
+        match = pattern.search(sql)
+        if match is None:
+            return sql
+
+        limit = match.group(1)
+        depth = 0
+        i = match.end()
+        insert_at = len(sql)
+        in_string = False
+
+        while i < len(sql):
+            ch = sql[i]
+            if in_string:
+                if ch == "'":
+                    in_string = False
+                i += 1
+                continue
+            if ch == "'":
+                in_string = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    insert_at = i
+                    break
+                depth -= 1
+            elif ch == ";" and depth == 0:
+                insert_at = i
+                break
+            i += 1
+
+        body = sql[match.end():insert_at].rstrip()
+        sql = (
+            sql[:match.start()]
+            + "SELECT "
+            + body
+            + f"\n    LIMIT {limit}\n"
+            + sql[insert_at:]
+        )
+
+
 def convert_index_syntax(sql: str) -> str:
     """Index storage hints that PostgreSQL does not have.
 
@@ -271,54 +439,51 @@ def convert_index_syntax(sql: str) -> str:
 
 
 def convert_date_functions(sql: str) -> str:
-    """DATEADD and DATEDIFF, which have no direct PostgreSQL spelling.
+    """DATEADD and DATEDIFF, using the balanced-paren scanner.
 
-        DATEADD(DAY, -30, x)      -> (x + INTERVAL '-30 day')
-        DATEDIFF(MINUTE, a, b)    -> (EXTRACT(EPOCH FROM (b - a)) / 60)
+        DATEADD(DAY, -30, CAST(SYSUTCDATETIME() AS date))
+            -> ((CAST((NOW() AT TIME ZONE 'utc') AS date)) + INTERVAL '-30 day')
 
-    DATEDIFF is the one to be careful about. SQL Server counts *boundaries
-    crossed*, not elapsed time: DATEDIFF(DAY, '2026-01-01 23:59', '2026-01-02
-    00:01') is 1, though two minutes passed. The PostgreSQL form below measures
-    elapsed time and truncates, so it returns 0 for that pair.
+        DATEDIFF(MINUTE, a, b)
+            -> (EXTRACT(EPOCH FROM ((b) - (a))) / 60)::int
 
-    For this schema the difference does not bite - every DATEDIFF here measures
-    a duration between two timestamps (response time, resolution time), which
-    is exactly what elapsed-time semantics mean. It would bite on a query that
-    counts calendar days or month boundaries, so the divergence is recorded
-    here rather than discovered later.
+    The first version of this used `[^)]+?` for the arguments and silently
+    produced unbalanced SQL whenever an argument contained parentheses - which
+    the CAST above does. It looked fine and only the server complained.
+
+    A semantic caveat that survives the fix: SQL Server's DATEDIFF counts
+    *boundaries crossed*, not elapsed time. DATEDIFF(DAY, '2026-01-01 23:59',
+    '2026-01-02 00:01') is 1 in T-SQL though two minutes passed; the form
+    below measures elapsed seconds and truncates, so it returns 0. Every
+    DATEDIFF in this schema measures a duration between two timestamps, which
+    is elapsed-time semantics, so the difference does not bite here. MONTH and
+    YEAR are left untranslated on purpose so calendar arithmetic fails loudly
+    rather than returning a plausible wrong number.
     """
     unit_seconds = {
         "second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800,
     }
 
-    def fix_datediff(match: re.Match[str]) -> str:
-        unit, start, end = match.group(1).lower(), match.group(2), match.group(3)
+    def datediff(args: list[str]) -> str | None:
+        if len(args) != 3:
+            return None
+        unit, start_expr, end_expr = args[0].strip().lower(), args[1], args[2]
         divisor = unit_seconds.get(unit)
         if divisor is None:
-            # MONTH/YEAR are calendar arithmetic, not elapsed seconds. Leave
-            # them untranslated so the script fails loudly rather than
-            # returning a plausible wrong number.
-            return match.group(0)
-        inner = f"EXTRACT(EPOCH FROM (({end}) - ({start})))"
-        return f"({inner} / {divisor})::int" if divisor != 1 else f"{inner}::int"
+            return None  # MONTH/YEAR: leave it to fail visibly
+        epoch = f"EXTRACT(EPOCH FROM (({end_expr}) - ({start_expr})))"
+        return f"({epoch})::int" if divisor == 1 else f"(({epoch} / {divisor}))::int"
 
-    sql = re.sub(
-        r"\bDATEDIFF\s*\(\s*(\w+)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
-        fix_datediff,
-        sql,
-        flags=re.IGNORECASE,
-    )
-
-    def fix_dateadd(match: re.Match[str]) -> str:
-        unit, amount, target = match.group(1).lower(), match.group(2).strip(), match.group(3)
+    def dateadd(args: list[str]) -> str | None:
+        if len(args) != 3:
+            return None
+        unit, amount, target = args[0].strip().lower(), args[1].strip(), args[2]
+        if not re.fullmatch(r"-?\s*\d+", amount):
+            return None  # a non-literal interval needs a human
         return f"(({target}) + INTERVAL '{amount} {unit}')"
 
-    sql = re.sub(
-        r"\bDATEADD\s*\(\s*(\w+)\s*,\s*(-?\s*\d+)\s*,\s*([^)]+?)\s*\)",
-        fix_dateadd,
-        sql,
-        flags=re.IGNORECASE,
-    )
+    sql = _rewrite_calls(sql, "DATEDIFF", datediff)
+    sql = _rewrite_calls(sql, "DATEADD", dateadd)
     return sql
 
 
@@ -358,6 +523,8 @@ def translate(sql: str) -> str:
         convert_boolean_defaults,
         drop_default_constraint_names,
         convert_builtins,
+        convert_create_or_alter,
+        convert_top,
         convert_index_syntax,
         convert_date_functions,
         convert_apply,

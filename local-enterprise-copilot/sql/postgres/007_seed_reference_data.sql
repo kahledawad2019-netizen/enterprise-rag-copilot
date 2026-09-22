@@ -326,7 +326,7 @@ FROM (VALUES
 
 ('First-response time',
  'Elapsed minutes between ticket open and the first agent response. Measured in UTC.',
- '(EXTRACT(EPOCH FROM ((tickets.first_response_at_utc) - (tickets.opened_at_utc))) / 60)::int. NULL first_response_at_utc means no response was ever given; treat that as a breach, not as zero.',
+ '((EXTRACT(EPOCH FROM ((tickets.first_response_at_utc) - (tickets.opened_at_utc))) / 60))::int. NULL first_response_at_utc means no response was ever given; treat that as a breach, not as zero.',
  'Support Operations', '1.0', '2023-01-01',
  'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.first_response_at_utc',
  'SELECT AVG(CAST(actual_first_response_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_first_response_minutes IS NOT NULL;',
@@ -334,7 +334,7 @@ FROM (VALUES
 
 ('Resolution time',
  'Elapsed minutes between ticket open and resolution. A ticket that is closed without being resolved has no resolution time.',
- '(EXTRACT(EPOCH FROM ((tickets.resolved_at_utc) - (tickets.opened_at_utc))) / 60)::int. Exclude rows where resolved_at_utc IS NULL rather than treating them as zero.',
+ '((EXTRACT(EPOCH FROM ((tickets.resolved_at_utc) - (tickets.opened_at_utc))) / 60))::int. Exclude rows where resolved_at_utc IS NULL rather than treating them as zero.',
  'Support Operations', '1.0', '2023-01-01',
  'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.resolved_at_utc',
  'SELECT AVG(CAST(actual_resolution_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_resolution_minutes IS NOT NULL;',
@@ -354,7 +354,7 @@ FROM (VALUES
  'avg(core.usage_daily.active_users) over the last 30 days divided by core.subscriptions.seats for the matching product. Guard against division by zero with NULLIF.',
  'Customer Success', '1.0', '2024-01-01',
  'core.usage_daily, core.subscriptions', 'usage_daily.active_users, usage_daily.usage_date, subscriptions.seats',
- 'SELECT customer_id, AVG(CAST(active_users AS DOUBLE PRECISION)) FROM core.usage_daily WHERE usage_date >= ((CAST(NOW() + INTERVAL '-30 day') AS date)) GROUP BY customer_id;',
+ 'SELECT customer_id, AVG(CAST(active_users AS DOUBLE PRECISION)) FROM core.usage_daily WHERE usage_date >= ((CAST(NOW() AS date)) + INTERVAL '-30 day') GROUP BY customer_id;',
  'Excludes service accounts and API-only integrations, which do not register as active users.')
 ) AS v(term, definition, sql_guidance, owner, version, effective_date,
        related_tables, related_columns, example_calculation, known_exclusions)
@@ -394,10 +394,12 @@ SELECT v.question, v.sql_text, v.category, v.tables_used, v.glossary_terms,
        v.verified_by, v.verified_on, v.notes
 FROM (VALUES
 ('Which five customers have the highest ARR?',
- 'SELECT TOP (5) customer_name, current_arr, segment, region
+ 'SELECT customer_name, current_arr, segment, region
 FROM analytics.vw_customer_360
 WHERE customer_status = ''active''
-ORDER BY current_arr DESC;',
+ORDER BY current_arr DESC
+    LIMIT 5
+;',
  'revenue', 'analytics.vw_customer_360', 'ARR, Active customer',
  'Revenue Operations', '2025-06-01',
  'Uses the curated view so ARR matches the official definition.'),
@@ -489,7 +491,7 @@ ORDER BY overdue_amount DESC;',
 FROM core.usage_daily u
 JOIN core.products p      ON p.product_id = u.product_id
 JOIN core.subscriptions s ON s.customer_id = u.customer_id AND s.status = ''active''
-WHERE u.usage_date >= ((CAST(NOW() + INTERVAL '-30 day') AS date))
+WHERE u.usage_date >= ((CAST(NOW() AS date)) + INTERVAL '-30 day')
 GROUP BY p.product_name
 ORDER BY adoption_ratio;',
  'usage', 'core.usage_daily, core.products, core.subscriptions', 'Product adoption',
