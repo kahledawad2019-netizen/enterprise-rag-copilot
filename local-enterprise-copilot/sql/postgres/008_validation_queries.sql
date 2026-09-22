@@ -52,7 +52,7 @@ FROM core.usage_daily
 UNION ALL
 SELECT 'row_count.glossary_current', '= 19', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) = 19 THEN 'PASS' ELSE 'FAIL' END
-FROM ai.business_glossary WHERE is_current = 1
+FROM ai.business_glossary WHERE is_current = TRUE
 
 /* ---------------------------------------------------------------------------
    2. Referential integrity - orphans must be impossible.
@@ -121,7 +121,7 @@ UNION ALL
 SELECT 'rule.trials_excluded_from_mrr_view', '0', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) = 0 THEN 'PASS' ELSE 'FAIL' END
 FROM core.subscriptions s
-WHERE s.is_trial = 1
+WHERE s.is_trial = TRUE
   AND EXISTS (SELECT 1 FROM billing.invoices i WHERE i.subscription_id = s.subscription_id)
 
 /* ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ UNION ALL
 SELECT 'range.total_mrr_plausible', 'between 100k and 5m',
        CAST(CAST(SUM(mrr_amount) AS decimal(19,2)) AS varchar(30)),
        CASE WHEN SUM(mrr_amount) BETWEEN 100000 AND 5000000 THEN 'PASS' ELSE 'FAIL' END
-FROM core.subscriptions WHERE status = 'active' AND is_trial = 0
+FROM core.subscriptions WHERE status = 'active' AND is_trial = FALSE
 UNION ALL
 SELECT 'range.active_customer_share', 'between 40 and 95 pct',
        CAST(CAST(100.0 * SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) / COUNT(*)
@@ -174,11 +174,11 @@ FROM core.customers WHERE industry IS NULL
 UNION ALL
 SELECT 'edge.partial_refunds_present', '>= 10', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) >= 10 THEN 'PASS' ELSE 'FAIL' END
-FROM billing.refunds WHERE is_partial = 1
+FROM billing.refunds WHERE is_partial = TRUE
 UNION ALL
 SELECT 'edge.reactivated_customers_present', '>= 1', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) >= 1 THEN 'PASS' ELSE 'FAIL' END
-FROM core.customers WHERE is_reactivated = 1
+FROM core.customers WHERE is_reactivated = TRUE
 UNION ALL
 SELECT 'edge.plan_migrations_present', '>= 50', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) >= 50 THEN 'PASS' ELSE 'FAIL' END
@@ -236,7 +236,7 @@ FROM support.sla_policies WHERE policy_code = 'SLA-ENT-P1'
 UNION ALL
 SELECT 'known.superseded_mrr_definition_exists', '= 1', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) = 1 THEN 'PASS' ELSE 'FAIL' END
-FROM ai.business_glossary WHERE term = 'MRR' AND is_current = 0
+FROM ai.business_glossary WHERE term = 'MRR' AND is_current = FALSE
 UNION ALL
 SELECT 'known.customers_with_more_than_3_breaches', '>= 5', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) >= 5 THEN 'PASS' ELSE 'FAIL' END

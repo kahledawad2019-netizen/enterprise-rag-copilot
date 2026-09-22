@@ -549,6 +549,55 @@ def convert_date_parts(sql: str) -> str:
     return sql
 
 
+def boolean_columns(schema_sql: str) -> set[str]:
+    """Column names declared BOOLEAN, read from the translated DDL.
+
+    Discovered rather than hard-coded: a list in this file would drift the
+    moment someone adds a flag column, and the drift would be invisible until
+    a comparison against it failed in production.
+    """
+    return {
+        match.group(1).lower()
+        for match in re.finditer(
+            r"^\s+([A-Za-z_]\w*)\s+BOOLEAN\b", schema_sql, re.IGNORECASE | re.MULTILINE
+        )
+    }
+
+
+def convert_boolean_comparisons(sql: str, columns: set[str]) -> str:
+    """`is_trial = 0` -> `is_trial = FALSE`, for BOOLEAN columns only.
+
+    T-SQL's BIT compares with integers; PostgreSQL's BOOLEAN does not, and
+    says so:
+
+        ERROR: operator does not exist: boolean = integer
+        LINE 26: AND s.is_trial = 0
+
+    Converting the column type without converting its comparisons is a
+    half-migration that type-checks at DDL time and fails at query time.
+
+    Restricted to the names actually declared BOOLEAN so that an integer
+    column whose name happens to start with `is_` is left alone. An optional
+    table alias is allowed, because these comparisons are nearly always
+    written `s.is_trial = 0`.
+    """
+    if not columns:
+        return sql
+
+    names = "|".join(sorted(re.escape(c) for c in columns))
+    pattern = re.compile(
+        rf"\b((?:\w+\.)?({names}))\s*(=|<>|!=)\s*([01])\b", re.IGNORECASE
+    )
+
+    def fix(match: re.Match[str]) -> str:
+        column, _, operator, value = match.groups()
+        literal = "TRUE" if value == "1" else "FALSE"
+        operator = "<>" if operator in ("<>", "!=") else "="
+        return f"{column} {operator} {literal}"
+
+    return pattern.sub(fix, sql)
+
+
 def convert_recursive_cte(sql: str) -> str:
     """Add RECURSIVE to any WITH whose CTE references itself.
 
@@ -610,7 +659,7 @@ def tidy(sql: str) -> str:
     return re.sub(r"\n{4,}", "\n\n\n", sql).strip() + "\n"
 
 
-def translate(sql: str) -> str:
+def translate(sql: str, boolean_cols: set[str] | None = None) -> str:
     for step in (
         strip_batches,
         drop_unicode_prefix,
@@ -630,10 +679,15 @@ def translate(sql: str) -> str:
         convert_conditional_insert,
         convert_print,
         unbracket,
-        tidy,
     ):
         sql = step(sql)
-    return sql
+
+    # Needs the BOOLEAN column names, so it cannot be a plain step in the
+    # pipeline above.
+    if boolean_cols:
+        sql = convert_boolean_comparisons(sql, boolean_cols)
+
+    return tidy(sql)
 
 
 HEADER = """/* ===========================================================================
@@ -669,12 +723,22 @@ def main() -> int:
         parser.error("give one or more files, or --all")
 
     args.out.mkdir(parents=True, exist_ok=True)
+
+    # The table script has to be translated first: every later file compares
+    # against its BOOLEAN columns, and the comparison rule needs to know which
+    # names those are.
+    tables = source_dir / "003_create_tables.sql"
+    boolean_cols: set[str] = set()
+    if tables.exists():
+        boolean_cols = boolean_columns(translate(tables.read_text(encoding="utf-8")))
+        print(f"boolean columns discovered: {len(boolean_cols)}")
+
     for path in files:
         if path.name in HAND_TRANSLATED:
             print(f"skip  {path.name}  (hand-translated: semantics differ)")
             continue
         translated = HEADER.format(name=path.name) + translate(
-            path.read_text(encoding="utf-8")
+            path.read_text(encoding="utf-8"), boolean_cols
         )
         target = args.out / path.name
         target.write_text(translated, encoding="utf-8")

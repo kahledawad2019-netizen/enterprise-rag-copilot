@@ -94,7 +94,7 @@ FROM analytics.vw_month_spine AS m
 JOIN core.subscriptions AS s
       ON  s.started_on <= m.month_end
       AND (s.ended_on IS NULL OR s.ended_on >= m.month_start)
-      AND s.is_trial = 0
+      AND s.is_trial = FALSE
       AND s.status IN ('active', 'cancelled', 'expired', 'paused')
 JOIN core.tenants AS t ON t.tenant_id = s.tenant_id
 GROUP BY
@@ -278,7 +278,7 @@ LEFT JOIN LATERAL (
            SUM(s.mrr_amount) AS current_mrr,
            SUM(s.seats)    AS total_seats
     FROM core.subscriptions s
-    WHERE s.customer_id = c.customer_id AND s.status = 'active' AND s.is_trial = 0
+    WHERE s.customer_id = c.customer_id AND s.status = 'active' AND s.is_trial = FALSE
 ) AS sub
 LEFT JOIN LATERAL (
     SELECT SUM(i.total_amount) AS lifetime_billed,

@@ -202,7 +202,7 @@ SELECT v.term, v.definition, v.sql_guidance, v.owner, v.version, v.effective_dat
 FROM (VALUES
 ('MRR',
  'Monthly Recurring Revenue. The normalised monthly value of all paid, non-trial subscriptions that were active at any point during the month. Annual contracts are divided across the twelve months they cover rather than recognised in the month they are billed.',
- 'Use analytics.vw_monthly_recurring_revenue. If querying base tables, sum core.subscriptions.mrr_amount where is_trial = 0 and started_on <= end of month and (ended_on IS NULL OR ended_on >= start of month). Never sum invoice totals to get MRR: a single annual invoice would inflate one month twelvefold.',
+ 'Use analytics.vw_monthly_recurring_revenue. If querying base tables, sum core.subscriptions.mrr_amount where is_trial = FALSE and started_on <= end of month and (ended_on IS NULL OR ended_on >= start of month). Never sum invoice totals to get MRR: a single annual invoice would inflate one month twelvefold.',
  'Finance', '2.0', '2025-01-01',
  'core.subscriptions, analytics.vw_monthly_recurring_revenue',
  'subscriptions.mrr_amount, subscriptions.is_trial, subscriptions.started_on, subscriptions.ended_on',
@@ -220,7 +220,7 @@ FROM (VALUES
 
 ('Active customer',
  'A customer with at least one active, non-trial subscription and no churn date. Status alone is not sufficient: a customer can be flagged active while every subscription has lapsed.',
- 'Prefer analytics.vw_customer_360 WHERE customer_status = ''active'' AND active_subscriptions > 0. On base tables, join core.customers to core.subscriptions with s.status = ''active'' AND s.is_trial = 0 AND c.churn_date IS NULL.',
+ 'Prefer analytics.vw_customer_360 WHERE customer_status = ''active'' AND active_subscriptions > 0. On base tables, join core.customers to core.subscriptions with s.status = ''active'' AND s.is_trial = FALSE AND c.churn_date IS NULL.',
  'Revenue Operations', '1.1', '2024-06-01',
  'core.customers, core.subscriptions, analytics.vw_customer_360',
  'customers.status, customers.churn_date, subscriptions.status, subscriptions.is_trial',
@@ -229,10 +229,10 @@ FROM (VALUES
 
 ('Active subscription',
  'A subscription with status ''active'', not a trial, whose start date has passed and whose end date is either null or in the future.',
- 'core.subscriptions WHERE status = ''active'' AND is_trial = 0 AND started_on <= CAST(NOW() AS date) AND (ended_on IS NULL OR ended_on >= CAST(NOW() AS date)).',
+ 'core.subscriptions WHERE status = ''active'' AND is_trial = FALSE AND started_on <= CAST(NOW() AS date) AND (ended_on IS NULL OR ended_on >= CAST(NOW() AS date)).',
  'Revenue Operations', '1.0', '2023-01-01',
  'core.subscriptions', 'subscriptions.status, subscriptions.is_trial, subscriptions.started_on, subscriptions.ended_on',
- 'SELECT COUNT(*) FROM core.subscriptions WHERE status = ''active'' AND is_trial = 0;',
+ 'SELECT COUNT(*) FROM core.subscriptions WHERE status = ''active'' AND is_trial = FALSE;',
  'Paused subscriptions are excluded from this count but still contribute to MRR.'),
 
 ('New business',
@@ -284,19 +284,19 @@ FROM (VALUES
  'Excludes trial-only customers. Logo churn and revenue churn can move in opposite directions.'),
 
 ('Trial customer',
- 'A customer whose only subscriptions have is_trial = 1. Trials are excluded from all revenue metrics.',
- 'core.subscriptions WHERE is_trial = 1. A customer is trial-only when no subscription has is_trial = 0.',
+ 'A customer whose only subscriptions have is_trial = TRUE. Trials are excluded from all revenue metrics.',
+ 'core.subscriptions WHERE is_trial = TRUE. A customer is trial-only when no subscription has is_trial = FALSE.',
  'Revenue Operations', '1.0', '2023-01-01',
  'core.subscriptions, core.customers', 'subscriptions.is_trial, customers.status',
- 'SELECT COUNT(DISTINCT customer_id) FROM core.subscriptions WHERE is_trial = 1;',
+ 'SELECT COUNT(DISTINCT customer_id) FROM core.subscriptions WHERE is_trial = TRUE;',
  'Never included in MRR, ARR, or churn denominators.'),
 
 ('Paid customer',
  'A customer with at least one non-trial subscription that has generated at least one non-void invoice.',
- 'Join core.customers to core.subscriptions (is_trial = 0) and billing.invoices (status <> ''void'').',
+ 'Join core.customers to core.subscriptions (is_trial = FALSE) and billing.invoices (status <> ''void'').',
  'Finance', '1.0', '2023-01-01',
  'core.customers, core.subscriptions, billing.invoices', 'subscriptions.is_trial, invoices.status',
- 'SELECT COUNT(DISTINCT c.customer_id) FROM core.customers c JOIN core.subscriptions s ON s.customer_id = c.customer_id AND s.is_trial = 0;',
+ 'SELECT COUNT(DISTINCT c.customer_id) FROM core.customers c JOIN core.subscriptions s ON s.customer_id = c.customer_id AND s.is_trial = FALSE;',
  'Excludes trial-only customers and customers whose invoices were all voided.'),
 
 ('Overdue invoice',
@@ -317,7 +317,7 @@ FROM (VALUES
 
 ('SLA breach',
  'A ticket whose first response or resolution exceeded the contractual target in the SLA version that was in force ON THE DATE THE TICKET WAS OPENED. A ticket that never received a first response is always a first-response breach.',
- 'Use analytics.vw_sla_performance, which already resolves the correct SLA version by ticket open date. Do not join support.sla_policies on is_current = 1: that judges historical tickets against today''s contract and silently misreports every pre-2025 ticket.',
+ 'Use analytics.vw_sla_performance, which already resolves the correct SLA version by ticket open date. Do not join support.sla_policies on is_current = TRUE: that judges historical tickets against today''s contract and silently misreports every pre-2025 ticket.',
  'Support Operations', '2.0', '2025-01-01',
  'support.tickets, support.sla_policies, support.sla_breaches, analytics.vw_sla_performance',
  'tickets.opened_at_utc, tickets.first_response_at_utc, sla_policies.first_response_minutes, sla_policies.effective_from',
