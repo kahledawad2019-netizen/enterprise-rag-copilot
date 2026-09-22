@@ -18,8 +18,28 @@ BEGIN
 END
 $role$;
 
-ALTER ROLE copilot_readonly WITH
-    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOLOGIN;
+/* Managed PostgreSQL providers such as Neon do not let project owners alter
+   superuser-only attributes, even when the requested value is the safe
+   negative form (NOSUPERUSER / NOREPLICATION / NOBYPASSRLS).  New roles
+   already default to those values.  Apply the owner-manageable attributes,
+   then fail closed if a pre-existing role has any privileged attribute. */
+ALTER ROLE copilot_readonly WITH NOCREATEDB NOCREATEROLE NOLOGIN;
+
+DO $role_safety$
+DECLARE
+    role_is_unsafe boolean;
+BEGIN
+    SELECT rolsuper OR rolreplication OR rolbypassrls
+      INTO role_is_unsafe
+      FROM pg_roles
+     WHERE rolname = 'copilot_readonly';
+
+    IF role_is_unsafe IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION
+            'copilot_readonly must not be SUPERUSER, REPLICATION, or BYPASSRLS';
+    END IF;
+END
+$role_safety$;
 
 /* Reset this role's object privileges before applying the allowlist. */
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA core, billing, support, analytics, ai, security
@@ -57,4 +77,3 @@ DO $$ BEGIN RAISE NOTICE 'PostgreSQL role copilot_readonly configured.'; END $$;
    accidental later GRANT can defeat this allowlist. CI verifies the effective
    role, and production must repeat those checks using the real app login.
 */
-

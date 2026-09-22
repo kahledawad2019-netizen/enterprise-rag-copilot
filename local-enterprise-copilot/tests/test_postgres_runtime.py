@@ -140,3 +140,81 @@ def test_postgres_synthetic_loader_uses_psycopg_markers() -> None:
         "INSERT INTO core.customers (tenant_id, display_name) VALUES (%s, %s)",
         [(1, "Acme")],
     )
+
+
+def test_postgres_synthetic_loader_coerces_known_boolean_columns() -> None:
+    class BulkCursor:
+        def __init__(self) -> None:
+            self.call = None
+
+        def executemany(self, sql, rows) -> None:
+            self.call = (sql, rows)
+
+    class BulkConnection:
+        def __init__(self) -> None:
+            self.bulk_cursor = BulkCursor()
+
+        def cursor(self):
+            return self.bulk_cursor
+
+    connection = BulkConnection()
+    loader = SyntheticLoader(connection, dialect="postgres")
+
+    loader._insert_many(
+        "core.customers",
+        ["tenant_id", "is_reactivated"],
+        [(1, 0), (2, 1), (3, None)],
+    )
+
+    assert connection.bulk_cursor.call == (
+        "INSERT INTO core.customers (tenant_id, is_reactivated) VALUES (%s, %s)",
+        [(1, False), (2, True), (3, None)],
+    )
+
+
+def test_postgres_synthetic_loader_uses_copy_when_available() -> None:
+    class CopySink:
+        def __init__(self) -> None:
+            self.rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def write_row(self, row) -> None:
+            self.rows.append(row)
+
+    class CopyCursor:
+        def __init__(self) -> None:
+            self.sql = None
+            self.sink = CopySink()
+
+        def copy(self, sql):
+            self.sql = sql
+            return self.sink
+
+        def executemany(self, sql, rows) -> None:
+            raise AssertionError("COPY-capable PostgreSQL cursor must not use executemany")
+
+    class CopyConnection:
+        def __init__(self) -> None:
+            self.copy_cursor = CopyCursor()
+
+        def cursor(self):
+            return self.copy_cursor
+
+    connection = CopyConnection()
+    loader = SyntheticLoader(connection, dialect="postgres")
+
+    loader._insert_many(
+        "core.customers",
+        ["tenant_id", "is_reactivated"],
+        [(1, 0), (2, 1)],
+    )
+
+    assert connection.copy_cursor.sql == (
+        "COPY core.customers (tenant_id, is_reactivated) FROM STDIN"
+    )
+    assert connection.copy_cursor.sink.rows == [(1, False), (2, True)]

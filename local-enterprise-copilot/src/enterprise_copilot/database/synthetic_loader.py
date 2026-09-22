@@ -37,6 +37,17 @@ DELETE_ORDER = [
     "core.customers",
 ]
 
+# The deterministic generator represents SQL Server BIT values as 0/1.  The
+# PostgreSQL wire protocol intentionally does not coerce smallint parameters
+# to BOOLEAN, so convert only columns whose schema is known to be boolean.
+POSTGRES_BOOLEAN_COLUMNS: dict[str, frozenset[str]] = {
+    "core.customers": frozenset({"is_reactivated"}),
+    "core.customer_contacts": frozenset({"is_primary", "is_synthetic"}),
+    "core.subscriptions": frozenset({"is_trial", "auto_renew"}),
+    "billing.refunds": frozenset({"is_partial"}),
+    "support.sla_breaches": frozenset({"credit_issued"}),
+}
+
 
 class SyntheticLoader:
     def __init__(self, connection: Any, *, dialect: str = "tsql") -> None:
@@ -64,10 +75,29 @@ class SyntheticLoader:
         if not rows:
             return
         marker = "%s" if self.dialect == "postgres" else "?"
+        if self.dialect == "postgres":
+            boolean_columns = POSTGRES_BOOLEAN_COLUMNS.get(table, frozenset())
+            boolean_indexes = [
+                index for index, column in enumerate(columns) if column in boolean_columns
+            ]
+            if boolean_indexes:
+                rows = [
+                    tuple(
+                        bool(value) if index in boolean_indexes and value is not None else value
+                        for index, value in enumerate(row)
+                    )
+                    for row in rows
+                ]
         placeholders = ", ".join(marker for _ in columns)
         column_list = ", ".join(
             columns if self.dialect == "postgres" else [f"[{c}]" for c in columns]
         )
+        if self.dialect == "postgres" and hasattr(self.cursor, "copy"):
+            copy_sql = f"COPY {table} ({column_list}) FROM STDIN"
+            with self.cursor.copy(copy_sql) as copy:
+                for row in rows:
+                    copy.write_row(row)
+            return
         sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
         self.cursor.executemany(sql, rows)
 
