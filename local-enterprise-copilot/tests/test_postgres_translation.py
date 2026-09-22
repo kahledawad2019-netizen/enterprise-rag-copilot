@@ -54,3 +54,15 @@ CROSS APPLY (SELECT c.customer_id AS customer_id) AS ids;
     assert result.count(" ON TRUE") == 1
     assert "AS inv ON TRUE\nCROSS JOIN LATERAL" in result
     assert "CROSS APPLY" not in result
+
+
+def test_convert_datediff_accepts_date_or_timestamp_operands() -> None:
+    source = "DATEDIFF(DAY, c.signup_date, COALESCE(c.churn_date, CURRENT_DATE))"
+
+    result = TRANSLATOR.convert_date_functions(source)
+
+    assert "DATEDIFF" not in result
+    assert "CAST((COALESCE(c.churn_date, CURRENT_DATE)) AS TIMESTAMP)" in result
+    assert "CAST((c.signup_date) AS TIMESTAMP)" in result
+    assert "EXTRACT(EPOCH FROM" in result
+    assert "/ 86400" in result

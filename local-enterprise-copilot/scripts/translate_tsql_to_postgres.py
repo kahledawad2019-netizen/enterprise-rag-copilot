@@ -471,7 +471,15 @@ def convert_date_functions(sql: str) -> str:
         divisor = unit_seconds.get(unit)
         if divisor is None:
             return None  # MONTH/YEAR: leave it to fail visibly
-        epoch = f"EXTRACT(EPOCH FROM (({end_expr}) - ({start_expr})))"
+        # PostgreSQL returns an integer for date - date, but an interval for
+        # timestamp - timestamp. EXTRACT(EPOCH ...) only accepts an interval.
+        # Casting both sides makes one translation work for DATE, TIMESTAMP,
+        # and mixed expressions without depending on schema type inference.
+        elapsed = (
+            f"CAST(({end_expr}) AS TIMESTAMP) - "
+            f"CAST(({start_expr}) AS TIMESTAMP)"
+        )
+        epoch = f"EXTRACT(EPOCH FROM ({elapsed}))"
         return f"({epoch})::int" if divisor == 1 else f"(({epoch} / {divisor}))::int"
 
     def dateadd(args: list[str]) -> str | None:

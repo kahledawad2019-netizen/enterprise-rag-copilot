@@ -192,17 +192,17 @@ SELECT
     pol.version                             AS sla_version,
     pol.first_response_minutes              AS target_first_response_minutes,
     pol.resolution_minutes                  AS target_resolution_minutes,
-    ((EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60))::int AS actual_first_response_minutes,
-    ((EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60))::int       AS actual_resolution_minutes,
+    ((EXTRACT(EPOCH FROM (CAST((tk.first_response_at_utc) AS TIMESTAMP) - CAST((tk.opened_at_utc) AS TIMESTAMP))) / 60))::int AS actual_first_response_minutes,
+    ((EXTRACT(EPOCH FROM (CAST((tk.resolved_at_utc) AS TIMESTAMP) - CAST((tk.opened_at_utc) AS TIMESTAMP))) / 60))::int       AS actual_resolution_minutes,
     CASE
         WHEN tk.first_response_at_utc IS NULL THEN 1
-        WHEN ((EXTRACT(EPOCH FROM ((tk.first_response_at_utc) - (tk.opened_at_utc))) / 60))::int
+        WHEN ((EXTRACT(EPOCH FROM (CAST((tk.first_response_at_utc) AS TIMESTAMP) - CAST((tk.opened_at_utc) AS TIMESTAMP))) / 60))::int
              > pol.first_response_minutes THEN 1
         ELSE 0
     END                                     AS first_response_breached,
     CASE
         WHEN tk.resolved_at_utc IS NULL THEN 0   -- unresolved is not yet a resolution breach
-        WHEN ((EXTRACT(EPOCH FROM ((tk.resolved_at_utc) - (tk.opened_at_utc))) / 60))::int
+        WHEN ((EXTRACT(EPOCH FROM (CAST((tk.resolved_at_utc) AS TIMESTAMP) - CAST((tk.opened_at_utc) AS TIMESTAMP))) / 60))::int
              > pol.resolution_minutes THEN 1
         ELSE 0
     END                                     AS resolution_breached,
@@ -254,7 +254,7 @@ SELECT
     c.churn_date,
     c.status                                    AS customer_status,
     c.is_reactivated,
-    ((EXTRACT(EPOCH FROM ((COALESCE(c.churn_date, CAST((NOW() AT TIME ZONE 'utc') AS date))) - (c.signup_date))) / 86400))::int AS tenure_days,
+    ((EXTRACT(EPOCH FROM (CAST((COALESCE(c.churn_date, CAST((NOW() AT TIME ZONE 'utc') AS date))) AS TIMESTAMP) - CAST((c.signup_date) AS TIMESTAMP))) / 86400))::int AS tenure_days,
     COALESCE(sub.active_subscriptions, 0)       AS active_subscriptions,
     CAST(COALESCE(sub.current_mrr, 0) AS DECIMAL(19,4))      AS current_mrr,
     CAST(COALESCE(sub.current_mrr, 0) * 12 AS DECIMAL(19,4)) AS current_arr,
@@ -376,8 +376,8 @@ SELECT
     i.started_at_utc,
     i.detected_at_utc,
     i.resolved_at_utc,
-    ((EXTRACT(EPOCH FROM ((i.resolved_at_utc) - (i.started_at_utc))) / 60))::int AS total_duration_minutes,
-    ((EXTRACT(EPOCH FROM ((i.detected_at_utc) - (i.started_at_utc))) / 60))::int AS time_to_detect_minutes,
+    ((EXTRACT(EPOCH FROM (CAST((i.resolved_at_utc) AS TIMESTAMP) - CAST((i.started_at_utc) AS TIMESTAMP))) / 60))::int AS total_duration_minutes,
+    ((EXTRACT(EPOCH FROM (CAST((i.detected_at_utc) AS TIMESTAMP) - CAST((i.started_at_utc) AS TIMESTAMP))) / 60))::int AS time_to_detect_minutes,
     i.root_cause,
     i.postmortem_doc_id,
     i.affected_region,
