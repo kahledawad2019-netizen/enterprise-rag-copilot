@@ -539,11 +539,23 @@ class SQLGuard:
                     )
 
     def _apply_row_limit(self, statement: exp.Expression) -> str | None:
-        """Add TOP (n) when the query has no explicit limit.
+        """Add a row limit when the query has no explicit one.
 
         Rewriting the parsed tree rather than the text means this cannot be
-        defeated by unusual formatting, and it produces valid T-SQL by
-        construction.
+        defeated by unusual formatting, and it produces valid SQL for the
+        active dialect by construction.
+
+        The limit requested is `max_result_rows + 1`, deliberately.
+
+        Asking for exactly the cap makes truncation undetectable: the server
+        returns exactly `max_result_rows`, and the runner cannot distinguish
+        "there were precisely this many rows" from "there were far more and
+        you are seeing a slice". Measured against a 124k-row tenant slice, the
+        result came back with 5,000 rows and `truncated=False` - a silent
+        truncation, which is the failure mode the flag exists to prevent.
+
+        One extra row is enough to tell the two apart, and the runner trims it
+        before the caller ever sees it.
         """
         max_rows = self.settings.database.max_result_rows
         if max_rows <= 0 or not isinstance(statement, exp.Select):
@@ -552,7 +564,7 @@ class SQLGuard:
             return None
 
         limited = statement.copy()
-        limited.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
+        limited.set("limit", exp.Limit(expression=exp.Literal.number(max_rows + 1)))
         try:
             return limited.sql(dialect=self.dialect)
         except Exception as exc:  # never let a rewrite failure block a safe query

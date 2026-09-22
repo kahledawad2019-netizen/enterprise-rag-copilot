@@ -316,7 +316,21 @@ class ReadOnlyRunner:
                     "text_to_sql",
                     question,
                     sql,
-                    1 if allowed else 0,
+                    # `ai.audit_events.sql_allowed` is BIT on SQL Server and
+                    # BOOLEAN on PostgreSQL. Sending 1/0 worked on the former
+                    # and psycopg refuses to cast an integer parameter to
+                    # BOOLEAN, so every audit write on PostgreSQL failed with
+                    # "you will need to rewrite or cast the expression" - and
+                    # because auditing deliberately never breaks a request,
+                    # the failure was a log line nobody read while the audit
+                    # trail silently recorded nothing.
+                    #
+                    # A Python bool maps correctly in both drivers: psycopg to
+                    # BOOLEAN, pyodbc to BIT. This is the same BIT-versus-
+                    # BOOLEAN mismatch already fixed in synthetic_loader.py;
+                    # this site was missed because nothing checked that the
+                    # audit row actually arrived.
+                    bool(allowed),
                     block_reason,
                     row_count,
                     int(duration_ms) if duration_ms is not None else None,

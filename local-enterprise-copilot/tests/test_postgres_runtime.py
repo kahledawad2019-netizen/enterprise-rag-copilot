@@ -45,8 +45,17 @@ def test_postgres_guard_emits_limit_not_top(settings) -> None:
     )
 
     assert result.is_safe
-    assert result.effective_sql.endswith(f"LIMIT {settings.database.max_result_rows}")
     assert "TOP" not in result.effective_sql.upper()
+
+    # One more than the cap, deliberately. Asking for exactly
+    # `max_result_rows` makes truncation undetectable: the server returns
+    # exactly the cap and the runner cannot tell "there were precisely this
+    # many rows" from "there were 124,000 and you are seeing a slice".
+    # Measured against live data before the change, a capped result came back
+    # with truncated=False. The extra row is the probe, and the runner trims
+    # it before the caller sees it.
+    cap = settings.database.max_result_rows
+    assert result.effective_sql.endswith(f"LIMIT {cap + 1}")
 
 
 class _Cursor:
@@ -218,3 +227,50 @@ def test_postgres_synthetic_loader_uses_copy_when_available() -> None:
         "COPY core.customers (tenant_id, is_reactivated) FROM STDIN"
     )
     assert connection.copy_cursor.sink.rows == [(1, False), (2, True)]
+
+
+def test_postgres_audit_sends_a_boolean_not_an_integer(settings, monkeypatch) -> None:
+    """`ai.audit_events.sql_allowed` is BOOLEAN on PostgreSQL.
+
+    The runner used to send `1 if allowed else 0`, which is correct for SQL
+    Server's BIT and which psycopg refuses to cast to BOOLEAN. Every audit
+    write on PostgreSQL failed with "you will need to rewrite or cast the
+    expression".
+
+    That failure was invisible by design: auditing must never break a request,
+    so the exception became a log line and the query proceeded. The audit
+    trail recorded nothing while everything looked healthy, and it stayed that
+    way because no test asserted the row had actually arrived.
+
+    A Python bool maps correctly in both drivers - psycopg to BOOLEAN, pyodbc
+    to BIT - so the parameter type is asserted here rather than the dialect.
+    """
+    pg_settings = _postgres_settings(settings)
+    connection = _Connection()
+
+    @contextmanager
+    def fake_connection(_settings, autocommit=False):
+        yield connection
+
+    monkeypatch.setattr(runner_module, "raw_connection", fake_connection)
+
+    ReadOnlyRunner(pg_settings)._audit(
+        trace_id="t-1",
+        app_user="tester",
+        tenant_id=7,
+        question="how many customers?",
+        sql="SELECT 1",
+        allowed=True,
+        row_count=1,
+        duration_ms=12.0,
+    )
+
+    assert connection._cursor.calls, "the audit write never reached the cursor"
+    _, params = connection._cursor.calls[-1]
+    values = params[0]
+
+    sql_allowed = values[6]
+    assert isinstance(sql_allowed, bool), (
+        f"sql_allowed must be a bool for BOOLEAN/BIT portability, got {type(sql_allowed).__name__}"
+    )
+    assert sql_allowed is True
