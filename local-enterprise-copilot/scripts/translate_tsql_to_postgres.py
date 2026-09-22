@@ -190,6 +190,25 @@ def convert_object_guards(sql: str) -> str:
         "CREATE INDEX IF NOT EXISTS ",
         sql,
     )
+
+    # 004 guards its 29 indexes a third way:
+    #
+    #     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_x')
+    #     CREATE NONCLUSTERED INDEX IX_x ON ...
+    #
+    # `sys.indexes` is a SQL Server catalogue view that does not exist in
+    # PostgreSQL, so the probe cannot be kept even if the IF could. PostgreSQL
+    # has CREATE INDEX IF NOT EXISTS, which says the same thing in one clause.
+    #
+    # The UNIQUE keyword has to survive the rewrite. Dropping it would turn a
+    # uniqueness constraint into an ordinary index and remove a data-integrity
+    # rule while still creating something that looks right.
+    sql = re.sub(
+        r"(?is)IF\s+NOT\s+EXISTS\s*\(\s*SELECT[^)]*?\bsys\.indexes\b[^)]*?\)\s*"
+        r"CREATE\s+(UNIQUE\s+)?(?:NONCLUSTERED\s+|CLUSTERED\s+)?INDEX\s+",
+        lambda m: f"CREATE {m.group(1) or ''}INDEX IF NOT EXISTS ",
+        sql,
+    )
     return sql
 
 
