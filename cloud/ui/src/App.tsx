@@ -7,15 +7,17 @@ import Documents from "./components/Documents";
 import Evaluation from "./components/Evaluation";
 import RetrievalDebugger from "./components/RetrievalDebugger";
 import Sidebar from "./components/Sidebar";
+import System from "./components/System";
 import type { AskResponse, HealthResponse, MetaResponse, Strategy } from "./types";
 
-type View = "chat" | "retrieval" | "corpus" | "evaluation";
+type View = "chat" | "retrieval" | "corpus" | "evaluation" | "system";
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "chat", label: "Copilot" },
   { id: "retrieval", label: "Retrieval" },
   { id: "corpus", label: "Corpus" },
   { id: "evaluation", label: "Evaluation" },
+  { id: "system", label: "System" },
 ];
 
 type Turn =
@@ -172,12 +174,14 @@ export default function App() {
         </div>
 
         <div className="header__actions">
+          {/* Labelled "Theme: …" because the System *section* is also in this
+              header, and two controls reading "System" is a coin toss. */}
           <button
             className="btn btn--ghost"
-            title="Switch theme"
+            title="Switch between dark, light and following the operating system"
             onClick={() => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark")}
           >
-            {theme === "dark" ? "Dark" : theme === "light" ? "Light" : "System"}
+            Theme: {theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto"}
           </button>
           {view === "chat" && (
             <button
@@ -210,6 +214,7 @@ export default function App() {
           />
         )}
         {view === "evaluation" && <Evaluation />}
+        {view === "system" && <System />}
 
         {view === "chat" && (
         <>

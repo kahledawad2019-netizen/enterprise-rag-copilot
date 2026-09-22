@@ -1058,6 +1058,77 @@ td.num {
 }
 
 /* --------------------------------------------------------------------------
+   System
+   -------------------------------------------------------------------------- */
+
+.card--flagged {
+  border-color: var(--warn);
+}
+
+.mono-line {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.check:last-child {
+  border-bottom: none;
+}
+
+.check__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.check__name {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.check__detail {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.remedy {
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.remedy:last-child {
+  border-bottom: none;
+}
+
+.remedy__title {
+  font-weight: 620;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.remedy__body {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
    Corpus
    -------------------------------------------------------------------------- */
 

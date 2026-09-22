@@ -276,6 +276,25 @@ def require_token(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token.")
 
 
+def _chunk_count() -> int:
+    """How many chunks are indexed, without opening a second Qdrant client.
+
+    Embedded Qdrant permits one client per storage folder. The copilot already
+    holds one open for the life of the process, so anything else that wants to
+    read the index must borrow it — constructing a second `QdrantVectorStore`
+    raises "already accessed by another instance of Qdrant client" and makes a
+    perfectly good index look broken. This is the same single-process
+    constraint that keeps the container at one uvicorn worker.
+    """
+    if _copilot is None:
+        from enterprise_copilot.retrieval.vector_store import QdrantVectorStore
+
+        # Nothing holds the lock when the copilot failed to start, so opening
+        # a client here is safe and is the only way to report the index at all.
+        return QdrantVectorStore(get_settings()).count()
+    return _copilot.retriever.store.count()
+
+
 def get_copilot() -> Copilot:
     if _copilot is None:
         raise HTTPException(
@@ -305,11 +324,12 @@ def health() -> HealthResponse:
         )
     )
 
-    # Vector store
+    # Vector store. Reuses the copilot's open client rather than opening a
+    # second one: embedded Qdrant allows a single client per storage folder,
+    # so constructing one here fails with "already accessed by another
+    # instance" and reports a healthy index as broken.
     try:
-        from enterprise_copilot.retrieval.vector_store import QdrantVectorStore
-
-        count = QdrantVectorStore(settings).count()
+        count = _chunk_count()
         checks.append(
             HealthCheck(name="vector_store", ok=count > 0, detail=f"{count} chunks indexed")
         )
@@ -387,9 +407,7 @@ def meta() -> MetaResponse:
     document_count = 0
     chunk_count = 0
     try:
-        from enterprise_copilot.retrieval.vector_store import QdrantVectorStore
-
-        chunk_count = QdrantVectorStore(settings).count()
+        chunk_count = _chunk_count()
         document_count = len(list(settings.documents_dir.glob("*.md")))
     except Exception as exc:  # a missing index must not break the whole UI
         log.warning("Could not read corpus counts: %s", exc)
