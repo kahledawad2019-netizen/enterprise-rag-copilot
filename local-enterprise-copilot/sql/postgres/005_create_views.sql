@@ -38,7 +38,7 @@
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_month_spine
 AS
-WITH bounds AS (
+WITH RECURSIVE bounds AS (
     SELECT
         MAKE_DATE(EXTRACT(YEAR FROM MIN(started_on))::int, EXTRACT(MONTH FROM MIN(started_on))::int, 1) AS first_month,
         MAKE_DATE(EXTRACT(YEAR FROM MAX(bound_date))::int, EXTRACT(MONTH FROM MAX(bound_date))::int, 1)  AS last_month
@@ -50,7 +50,14 @@ WITH bounds AS (
 months AS (
     SELECT first_month AS month_start, last_month FROM bounds
     UNION ALL
-    SELECT ((month_start) + INTERVAL '1 month'), last_month
+    -- The CAST is a no-op in T-SQL, where DATEADD on a date returns a
+    -- date. It is load-bearing for PostgreSQL: there `date + interval`
+    -- yields timestamp, and a recursive CTE requires the recursive term's
+    -- column types to match the anchor's exactly. Saying the intended type
+    -- out loud in the source keeps both dialects unambiguous, rather than
+    -- making the translator guess whether a cast would preserve or
+    -- truncate the value.
+    SELECT CAST(((month_start) + INTERVAL '1 month') AS date), last_month
     FROM months
     WHERE month_start < last_month
 )

@@ -43,7 +43,14 @@ WITH bounds AS (
 months AS (
     SELECT first_month AS month_start, last_month FROM bounds
     UNION ALL
-    SELECT DATEADD(MONTH, 1, month_start), last_month
+    -- The CAST is a no-op in T-SQL, where DATEADD on a date returns a
+    -- date. It is load-bearing for PostgreSQL: there `date + interval`
+    -- yields timestamp, and a recursive CTE requires the recursive term's
+    -- column types to match the anchor's exactly. Saying the intended type
+    -- out loud in the source keeps both dialects unambiguous, rather than
+    -- making the translator guess whether a cast would preserve or
+    -- truncate the value.
+    SELECT CAST(DATEADD(MONTH, 1, month_start) AS date), last_month
     FROM months
     WHERE month_start < last_month
 )

@@ -549,6 +549,41 @@ def convert_date_parts(sql: str) -> str:
     return sql
 
 
+def convert_recursive_cte(sql: str) -> str:
+    """Add RECURSIVE to any WITH whose CTE references itself.
+
+    T-SQL infers recursion; PostgreSQL requires it to be declared. Without the
+    keyword the self-reference is resolved as an ordinary table name and the
+    query fails with `relation "months" does not exist` - which reads like a
+    missing table rather than a missing keyword.
+
+    The scan finds CTE names in the WITH list and checks whether any appears
+    in a FROM or JOIN inside its own body.
+    """
+    def needs_recursive(block: str) -> bool:
+        for name in re.findall(r"(?:WITH|,)\s*(\w+)\s+AS\s*\(", block, re.IGNORECASE):
+            if re.search(rf"\b(?:FROM|JOIN)\s+{name}\b", block, re.IGNORECASE):
+                return True
+        return False
+
+    out: list[str] = []
+    for statement in re.split(r"(?<=;)", sql):
+        if (
+            re.search(r"\bWITH\s+\w+\s+AS\s*\(", statement, re.IGNORECASE)
+            and not re.search(r"\bWITH\s+RECURSIVE\b", statement, re.IGNORECASE)
+            and needs_recursive(statement)
+        ):
+            statement = re.sub(
+                r"\bWITH\s+(\w+\s+AS\s*\()",
+                r"WITH RECURSIVE \1",
+                statement,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        out.append(statement)
+    return "".join(out)
+
+
 def convert_apply(sql: str) -> str:
     """APPLY -> LATERAL.
 
@@ -587,6 +622,7 @@ def translate(sql: str) -> str:
         convert_builtins,
         convert_create_or_alter,
         convert_date_parts,
+        convert_recursive_cte,
         convert_top,
         convert_index_syntax,
         convert_date_functions,
