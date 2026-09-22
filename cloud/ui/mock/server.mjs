@@ -313,6 +313,46 @@ const EVALUATION = {
   },
 };
 
+const PERSONA_GROUPS = {
+  admin: ["public", "internal", "finance", "support", "security", "exec"],
+  analyst_na: ["public", "internal", "finance"],
+  guest: ["public"],
+};
+
+/** A slice of the real corpus, including the version pair the UI has to flag. */
+const DOCUMENTS = [
+  {
+    doc_id: "DOC-REF-001", title: "Refund and Credit Policy", doc_type: "refund_policy",
+    version: "2.1", effective_date: "2025-01-01", status: "current", authority: "policy",
+    department: "Finance", owner: "VP Finance", supersedes: "DOC-REF-000",
+    superseded_by: null, related_docs: ["DOC-PRC-001"],
+    tags: ["refund", "credit", "billing"], words: 460, readable: true,
+    access_group: "public",
+  },
+  {
+    doc_id: "DOC-REF-000", title: "Refund Policy (Superseded)", doc_type: "refund_policy",
+    version: "1.0", effective_date: "2023-01-01", status: "superseded", authority: "policy",
+    department: "Finance", owner: "VP Finance", supersedes: null,
+    superseded_by: "DOC-REF-001", related_docs: [],
+    tags: ["refund", "historical"], words: 174, readable: true,
+    access_group: "public",
+  },
+  {
+    doc_id: "DOC-PRC-001", title: "Pricing Policy", doc_type: "pricing_policy",
+    version: "3.0", effective_date: "2026-01-01", status: "current", authority: "policy",
+    department: "Finance", owner: "CFO", supersedes: null, superseded_by: null,
+    related_docs: [], tags: ["pricing", "discount"], words: 612, readable: true,
+    access_group: "finance",
+  },
+  {
+    doc_id: "DOC-TST-001", title: "Prompt Injection Test Document", doc_type: "test",
+    version: "1.0", effective_date: "2026-01-01", status: "current", authority: "reference",
+    department: "Security", owner: "CISO", supersedes: null, superseded_by: null,
+    related_docs: [], tags: ["security", "injection"], words: 210, readable: true,
+    access_group: "security",
+  },
+];
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -324,6 +364,23 @@ const server = createServer((req, res) => {
   if (url.pathname === "/api/meta") return send(200, META);
   if (url.pathname === "/api/health") return send(200, HEALTH);
   if (url.pathname === "/api/evaluation") return send(200, EVALUATION);
+
+  if (url.pathname === "/api/documents") {
+    // The real backend filters by persona server-side, so the mock does too -
+    // a mock that returns everything would hide exactly the bug worth
+    // catching, which is a page that filters in the browser.
+    const persona = url.searchParams.get("persona") ?? "admin";
+    const allowed = PERSONA_GROUPS[persona] ?? PERSONA_GROUPS.admin;
+    const visible = DOCUMENTS.filter(
+      (d) => persona === "admin" || allowed.includes(d.access_group),
+    );
+    return send(200, {
+      documents: visible.map(({ access_group, ...rest }) => rest),
+      total: visible.length,
+      hidden_by_permissions: DOCUMENTS.length - visible.length,
+      persona,
+    });
+  }
 
   if (url.pathname === "/api/retrieve" && req.method === "POST") {
     let raw = "";

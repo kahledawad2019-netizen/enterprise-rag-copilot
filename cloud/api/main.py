@@ -559,6 +559,124 @@ def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> 
     return RetrieveResponse(query=body.query, runs=runs)
 
 
+class DocumentOut(BaseModel):
+    doc_id: str
+    title: str
+    doc_type: str = ""
+    version: str = ""
+    effective_date: str = ""
+    status: str = ""
+    authority: str = ""
+    department: str = ""
+    owner: str = ""
+    supersedes: str | None = None
+    superseded_by: str | None = None
+    related_docs: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    words: int = 0
+    readable: bool = True
+
+
+@app.get("/documents", dependencies=[Depends(require_token)])
+def documents(persona: str = "admin") -> dict[str, Any]:
+    """The corpus, filtered by what this persona is allowed to see.
+
+    Filtering happens here rather than in the browser. Sending the full list
+    and hiding rows client-side would put the titles of documents a guest
+    cannot read into a payload a guest receives, which is the same disclosure
+    the retrieval filters exist to prevent.
+
+    `access_group` and `tenant` are not returned. They decide the filter; they
+    are not the browser's business.
+    """
+    p = PERSONAS.get(persona)
+    if p is None:
+        raise HTTPException(status_code=400, detail=f"Unknown persona {persona!r}.")
+
+    allowed_groups = {g.lower() for g in p["access_groups"]}
+    tenant = str(p["tenant"]).lower()
+
+    settings = get_settings()
+    out: list[DocumentOut] = []
+    hidden = 0
+
+    for path in sorted(settings.documents_dir.glob("*.md")):
+        try:
+            meta, body = _read_front_matter(path)
+        except Exception as exc:
+            log.warning("could not parse %s: %s", path.name, exc)
+            continue
+
+        group = str(meta.get("access_group", "public")).lower()
+        doc_tenant = str(meta.get("tenant", "all")).lower()
+
+        if not p["is_admin"]:
+            if group not in allowed_groups:
+                hidden += 1
+                continue
+            if doc_tenant not in ("all", tenant):
+                hidden += 1
+                continue
+
+        out.append(
+            DocumentOut(
+                doc_id=str(meta.get("doc_id", path.stem)),
+                title=str(meta.get("title", path.stem)),
+                doc_type=str(meta.get("doc_type", "")),
+                version=str(meta.get("version", "")),
+                effective_date=str(meta.get("effective_date", "")),
+                status=str(meta.get("status", "")),
+                authority=str(meta.get("authority", "")),
+                department=str(meta.get("department", "")),
+                owner=str(meta.get("owner", "")),
+                supersedes=_opt(meta.get("supersedes")),
+                superseded_by=_opt(meta.get("superseded_by")),
+                related_docs=_as_list(meta.get("related_docs")),
+                tags=_as_list(meta.get("tags")),
+                words=len(body.split()),
+            )
+        )
+
+    return {
+        "documents": [d.model_dump() for d in out],
+        "total": len(out),
+        "hidden_by_permissions": hidden,
+        "persona": persona,
+    }
+
+
+def _read_front_matter(path: Path) -> tuple[dict[str, Any], str]:
+    """YAML front matter and the body, without the ingestion pipeline.
+
+    Deliberately not `ingestion.parsers`: that chunks, hashes and validates
+    against a pydantic model, which is the right thing when building an index
+    and far too much work to render a list.
+    """
+    import yaml
+
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}, text
+
+    _, _, rest = text.partition("---")
+    front, separator, body = rest.partition("---")
+    if not separator:
+        return {}, text
+    return yaml.safe_load(front) or {}, body
+
+
+def _opt(value: Any) -> str | None:
+    return None if value in (None, "", "null") else str(value)
+
+
+def _as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.strip():
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return []
+
+
 @app.get("/evaluation", dependencies=[Depends(require_token)])
 def evaluation() -> dict[str, Any]:
     """The measured numbers, read from the committed evaluation runs.

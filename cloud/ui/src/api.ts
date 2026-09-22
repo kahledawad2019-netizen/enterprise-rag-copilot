@@ -1,5 +1,6 @@
 import type {
   AskResponse,
+  DocumentsResponse,
   EvaluationResponse,
   HealthResponse,
   MetaResponse,
@@ -117,4 +118,11 @@ export function retrieve({
 
 export function getEvaluation(): Promise<EvaluationResponse> {
   return request<EvaluationResponse>("/evaluation");
+}
+
+export function getDocuments(persona: string): Promise<DocumentsResponse> {
+  // The persona goes to the server because the server does the filtering.
+  // Fetching everything and hiding rows here would ship the titles of
+  // documents a guest may not read to a guest.
+  return request<DocumentsResponse>(`/documents?persona=${encodeURIComponent(persona)}`);
 }

@@ -181,3 +181,31 @@ export interface EvaluationResponse {
   runs: Array<{ file: string; kind: string; payload: unknown }>;
   report: EvaluationReport;
 }
+
+// --- corpus ----------------------------------------------------------------
+
+export interface DocumentSummary {
+  doc_id: string;
+  title: string;
+  doc_type: string;
+  version: string;
+  effective_date: string;
+  status: string;
+  authority: string;
+  department: string;
+  owner: string;
+  supersedes: string | null;
+  superseded_by: string | null;
+  related_docs: string[];
+  tags: string[];
+  words: number;
+  readable: boolean;
+}
+
+export interface DocumentsResponse {
+  documents: DocumentSummary[];
+  total: number;
+  /** How many the access model withheld. The point of the screen, not a footnote. */
+  hidden_by_permissions: number;
+  persona: string;
+}

@@ -137,6 +137,14 @@ export default function RetrievalDebugger({ meta, persona }: Props) {
         </p>
       )}
 
+      <p className="field__hint" style={{ marginTop: -4 }}>
+        <strong>Scores will not always descend with rank, and that is correct.</strong> After
+        scoring, two stages deliberately reorder: authority preference puts binding policy above
+        advisory guidance, and MMR (λ=0.7) trades a little relevance for diversity, so a slightly
+        lower-scoring passage from a different section can outrank a near-duplicate of the one
+        above it.
+      </p>
+
       {error && (
         <div className="notice notice--danger">
           <span className="notice__icon">✕</span>

@@ -3,16 +3,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CopilotApiError, ask, getHealth, getMeta } from "./api";
 import AnswerCard from "./components/AnswerCard";
 import Composer from "./components/Composer";
+import Documents from "./components/Documents";
 import Evaluation from "./components/Evaluation";
 import RetrievalDebugger from "./components/RetrievalDebugger";
 import Sidebar from "./components/Sidebar";
 import type { AskResponse, HealthResponse, MetaResponse, Strategy } from "./types";
 
-type View = "chat" | "retrieval" | "evaluation";
+type View = "chat" | "retrieval" | "corpus" | "evaluation";
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "chat", label: "Copilot" },
   { id: "retrieval", label: "Retrieval" },
+  { id: "corpus", label: "Corpus" },
   { id: "evaluation", label: "Evaluation" },
 ];
 
@@ -201,6 +203,12 @@ export default function App() {
 
       <main className="main">
         {view === "retrieval" && <RetrievalDebugger meta={meta} persona={persona} />}
+        {view === "corpus" && (
+          <Documents
+            persona={persona}
+            personaLabel={meta?.personas.find((p) => p.key === persona)?.label ?? persona}
+          />
+        )}
         {view === "evaluation" && <Evaluation />}
 
         {view === "chat" && (
