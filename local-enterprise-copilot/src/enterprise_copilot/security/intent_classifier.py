@@ -85,19 +85,21 @@ log = logging.getLogger(__name__)
 
 class IntentCategory(StrEnum):
     BENIGN = "benign"
-    DESTRUCTIVE = "destructive"           # wants data or objects changed/removed
-    EXFILTRATION = "exfiltration"         # wants credentials or system internals
-    PRIVILEGE_ESCALATION = "privilege"    # wants rights it does not have
-    INJECTION = "injection"               # wants the system to ignore its rules
+    DESTRUCTIVE = "destructive"  # wants data or objects changed/removed
+    EXFILTRATION = "exfiltration"  # wants credentials or system internals
+    PRIVILEGE_ESCALATION = "privilege"  # wants rights it does not have
+    INJECTION = "injection"  # wants the system to ignore its rules
 
 
 # Categories that cause a refusal. BENIGN is the only clearance.
-REFUSING_CATEGORIES = frozenset({
-    IntentCategory.DESTRUCTIVE,
-    IntentCategory.EXFILTRATION,
-    IntentCategory.PRIVILEGE_ESCALATION,
-    IntentCategory.INJECTION,
-})
+REFUSING_CATEGORIES = frozenset(
+    {
+        IntentCategory.DESTRUCTIVE,
+        IntentCategory.EXFILTRATION,
+        IntentCategory.PRIVILEGE_ESCALATION,
+        IntentCategory.INJECTION,
+    }
+)
 
 
 SCREEN_SYSTEM = """You are a security screen for a READ-ONLY business intelligence system.
@@ -218,11 +220,13 @@ class LLMIntentScreen:
         started = time.perf_counter()
         try:
             payload = self._ask(question)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             elapsed = (time.perf_counter() - started) * 1000
             log.warning("Intent screening unavailable (%s); rules remain in force", exc)
             return IntentVerdict(
-                refuse=False, available=False, elapsed_ms=elapsed,
+                refuse=False,
+                available=False,
+                elapsed_ms=elapsed,
                 model=self.settings.chat_model,
                 notes=[f"screen failed: {type(exc).__name__}"],
             )
@@ -249,8 +253,11 @@ class LLMIntentScreen:
                 {"role": "user", "content": f"<request>\n{_sanitise(question)}\n</request>"},
             ],
             format="json",
-            options={"temperature": 0.0, "num_predict": 120,
-                     "num_ctx": self.settings.profile.chat_context_tokens},
+            options={
+                "temperature": 0.0,
+                "num_predict": 120,
+                "num_ctx": self.settings.profile.chat_context_tokens,
+            },
             keep_alive=self.settings.ollama.keep_alive,
         )
         return json.loads(response["message"]["content"])
@@ -264,7 +271,9 @@ class LLMIntentScreen:
             # meant is how a screen starts declining legitimate questions.
             log.warning("Intent screen returned unknown category %r; treating as benign", raw)
             return IntentVerdict(
-                refuse=False, elapsed_ms=elapsed_ms, model=self.settings.chat_model,
+                refuse=False,
+                elapsed_ms=elapsed_ms,
+                model=self.settings.chat_model,
                 notes=[f"unknown category {raw!r}"],
             )
 
@@ -287,8 +296,13 @@ class LLMIntentScreen:
             )
 
         return IntentVerdict(
-            refuse=refuse, category=category, confidence=confidence, reason=reason,
-            elapsed_ms=elapsed_ms, model=self.settings.chat_model, notes=notes,
+            refuse=refuse,
+            category=category,
+            confidence=confidence,
+            reason=reason,
+            elapsed_ms=elapsed_ms,
+            model=self.settings.chat_model,
+            notes=notes,
         )
 
 
@@ -300,8 +314,8 @@ def _sanitise(question: str) -> str:
 __all__ = [
     "CLEARED",
     "REFUSING_CATEGORIES",
+    "SCREEN_SYSTEM",
     "IntentCategory",
     "IntentVerdict",
     "LLMIntentScreen",
-    "SCREEN_SYSTEM",
 ]

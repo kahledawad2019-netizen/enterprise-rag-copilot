@@ -122,7 +122,7 @@ class NativeTextToSQLProvider(TextToSQLProvider):
                 ],
                 options={
                     "num_ctx": self.settings.profile.chat_context_tokens,
-                    "temperature": 0.0,   # SQL generation wants determinism
+                    "temperature": 0.0,  # SQL generation wants determinism
                     "num_predict": 600,
                 },
                 keep_alive=self.settings.ollama.keep_alive,
@@ -187,18 +187,23 @@ class NativeTextToSQLProvider(TextToSQLProvider):
                 model=self.settings.chat_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": REPAIR_PROMPT.format(
-                        sql=sql, problems="\n".join(f"- {p}" for p in problems),
-                    )},
+                    {
+                        "role": "user",
+                        "content": REPAIR_PROMPT.format(
+                            sql=sql,
+                            problems="\n".join(f"- {p}" for p in problems),
+                        ),
+                    },
                 ],
                 options={
                     "num_ctx": self.settings.profile.chat_context_tokens,
-                    "temperature": 0.0, "num_predict": 600,
+                    "temperature": 0.0,
+                    "num_predict": 600,
                 },
                 keep_alive=self.settings.ollama.keep_alive,
             )
             return extract_sql(response["message"]["content"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("SQL repair attempt failed: %s", exc)
             return ""
 
@@ -222,7 +227,7 @@ class NativeTextToSQLProvider(TextToSQLProvider):
                 keep_alive=self.settings.ollama.keep_alive,
             )
             return response["message"]["content"].strip()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Result explanation failed: %s", exc)
             return f"The query returned {result.row_count} row(s)."
 
@@ -253,7 +258,7 @@ def extract_sql(response: str) -> str:
         start = STATEMENT_START.search(text)
         if not start:
             return ""
-        candidate = text[start.start():]
+        candidate = text[start.start() :]
 
     # Keep the first statement only; drop a trailing semicolon.
     candidate = candidate.split(";")[0].strip()
@@ -264,4 +269,4 @@ def extract_sql(response: str) -> str:
     return candidate
 
 
-__all__ = ["NativeTextToSQLProvider", "SQL_PROMPT_VERSION", "extract_sql"]
+__all__ = ["SQL_PROMPT_VERSION", "NativeTextToSQLProvider", "extract_sql"]

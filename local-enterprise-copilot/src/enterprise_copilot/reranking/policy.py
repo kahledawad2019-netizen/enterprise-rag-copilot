@@ -112,8 +112,8 @@ DEFAULT_MARGIN_THRESHOLD = 0.10
 
 
 class RerankPolicy(StrEnum):
-    ALWAYS = "always"        # previous behaviour
-    ADAPTIVE = "adaptive"    # skip when the ranking is already confident
+    ALWAYS = "always"  # previous behaviour
+    ADAPTIVE = "adaptive"  # skip when the ranking is already confident
     NEVER = "never"
 
 
@@ -208,24 +208,16 @@ def decide(
 
     identifier = _exact_identifier_hit(query, fused)
     if identifier:
-        return RerankDecision(
-            False, f"exact identifier {identifier} already matched at rank 1"
-        )
+        return RerankDecision(False, f"exact identifier {identifier} already matched at rank 1")
 
     if _retrievers_agree(fused, dense, sparse):
-        return RerankDecision(
-            False, "dense and sparse independently agree on the top result"
-        )
+        return RerankDecision(False, "dense and sparse independently agree on the top result")
 
     margin = _margin(fused)
     if margin >= margin_threshold:
-        return RerankDecision(
-            False, f"top result leads by {margin:.0%}, ranking already decisive"
-        )
+        return RerankDecision(False, f"top result leads by {margin:.0%}, ranking already decisive")
 
-    return RerankDecision(
-        True, f"retrievers disagree and top margin is only {margin:.0%}"
-    )
+    return RerankDecision(True, f"retrievers disagree and top margin is only {margin:.0%}")
 
 
 __all__ = [

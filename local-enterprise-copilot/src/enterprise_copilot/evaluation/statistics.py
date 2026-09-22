@@ -57,8 +57,7 @@ class Interval:
         return (self.upper - self.lower) / 2
 
     def format(self, places: int = 3) -> str:
-        return (f"{self.mean:.{places}f} "
-                f"[{self.lower:.{places}f}, {self.upper:.{places}f}]")
+        return f"{self.mean:.{places}f} [{self.lower:.{places}f}, {self.upper:.{places}f}]"
 
     def __str__(self) -> str:
         return self.format()
@@ -77,8 +76,8 @@ class Comparison:
     ci_upper: float
     p_value: float
     n: int
-    wins: int          # queries where B beat A
-    losses: int        # queries where A beat B
+    wins: int  # queries where B beat A
+    losses: int  # queries where A beat B
     ties: int
 
     @property
@@ -167,9 +166,7 @@ def clustered_bootstrap_mean(
     if not values:
         return Interval(mean=0.0, lower=0.0, upper=0.0, n=0, confidence=confidence)
     if len(values) != len(clusters):
-        raise ValueError(
-            f"values and clusters must align: {len(values)} vs {len(clusters)}"
-        )
+        raise ValueError(f"values and clusters must align: {len(values)} vs {len(clusters)}")
 
     grouped: dict[str, list[float]] = {}
     for value, key in zip(values, clusters, strict=True):
@@ -257,13 +254,24 @@ def paired_bootstrap(
     p_value = min(1.0, 2.0 * opposite / resamples)
 
     return Comparison(
-        name_a=name_a, name_b=name_b, mean_a=mean_a, mean_b=mean_b,
-        difference=observed, ci_lower=ci_lower, ci_upper=ci_upper,
-        p_value=p_value, n=n, wins=wins, losses=losses, ties=ties,
+        name_a=name_a,
+        name_b=name_b,
+        mean_a=mean_a,
+        mean_b=mean_b,
+        difference=observed,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+        p_value=p_value,
+        n=n,
+        wins=wins,
+        losses=losses,
+        ties=ties,
     )
 
 
-def holm_bonferroni(comparisons: list[Comparison], alpha: float = 0.05) -> list[tuple[Comparison, bool]]:
+def holm_bonferroni(
+    comparisons: list[Comparison], alpha: float = 0.05
+) -> list[tuple[Comparison, bool]]:
     """Correct for multiple comparisons, Holm-Bonferroni.
 
     Comparing four strategies pairwise is six tests. At alpha = 0.05 the chance
@@ -284,7 +292,7 @@ def holm_bonferroni(comparisons: list[Comparison], alpha: float = 0.05) -> list[
         threshold = alpha / (total - rank)
         significant = rejected_so_far and comparison.p_value <= threshold
         if not significant:
-            rejected_so_far = False   # Holm stops at the first failure
+            rejected_so_far = False  # Holm stops at the first failure
         results.append((index, significant))
 
     verdicts = dict(results)
@@ -302,7 +310,7 @@ def required_sample_size(
     """
     if effect <= 0 or spread <= 0:
         return 0
-    z_alpha = 1.959964   # two-sided 0.05
+    z_alpha = 1.959964  # two-sided 0.05
     z_power = {0.80: 0.841621, 0.90: 1.281552, 0.95: 1.644854}.get(power, 0.841621)
     return max(1, math.ceil(((z_alpha + z_power) * spread / effect) ** 2))
 
@@ -316,7 +324,12 @@ def standard_deviation(values: list[float]) -> float:
 
 
 __all__ = [
-    "Comparison", "Interval", "bootstrap_mean",
-    "clustered_bootstrap_mean", "holm_bonferroni",
-    "paired_bootstrap", "required_sample_size", "standard_deviation",
+    "Comparison",
+    "Interval",
+    "bootstrap_mean",
+    "clustered_bootstrap_mean",
+    "holm_bonferroni",
+    "paired_bootstrap",
+    "required_sample_size",
+    "standard_deviation",
 ]

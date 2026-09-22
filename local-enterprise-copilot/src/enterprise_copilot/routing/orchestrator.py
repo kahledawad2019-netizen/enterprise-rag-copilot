@@ -34,14 +34,12 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Settings, get_settings
 from ..database.read_only_runner import QueryBlockedError, QueryExecutionError, QueryResult
 from ..generation.answerer import Answerer, GenerationError
-from ..observability.tracing import Tracer, get_tracer
 from ..models.evidence import (
     Answer,
     AnswerStatus,
@@ -51,6 +49,7 @@ from ..models.evidence import (
     build_document_evidence,
     detect_conflicts,
 )
+from ..observability.tracing import Tracer, get_tracer
 from ..retrieval.hybrid import HybridRetriever, RetrievalTrace, UserContext
 from ..text_to_sql.provider import SQLRequest, TextToSQLProvider, build_provider
 from .router import QueryRouter, Route, RoutingDecision
@@ -129,7 +128,7 @@ class Copilot:
         if self._sql_provider is None and not self._sql_provider_failed:
             try:
                 self._sql_provider = build_provider(self.settings)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("Text-to-SQL unavailable: %s", exc)
                 self._sql_provider_failed = True
         return self._sql_provider
@@ -147,17 +146,23 @@ class Copilot:
         user = user or UserContext.admin()
         self.tracer.reset()
         trace = CopilotTrace(
-            trace_id=self.tracer.new_trace(), question=question,
-            user=user.user_name, tenant_id=tenant_id,
+            trace_id=self.tracer.new_trace(),
+            question=question,
+            user=user.user_name,
+            tenant_id=tenant_id,
         )
 
         # ---- route ----
         started = time.perf_counter()
         with self.tracer.span("routing", question=question, user=user.user_name) as span:
             decision = self.router.route(question)
-            span.set(route=decision.route.value, decided_by=decision.decided_by,
-                     confidence=decision.confidence, identifiers=decision.identifiers,
-                     prompt_version=decision.prompt_version)
+            span.set(
+                route=decision.route.value,
+                decided_by=decision.decided_by,
+                confidence=decision.confidence,
+                identifiers=decision.identifiers,
+                prompt_version=decision.prompt_version,
+            )
         trace.routing = decision
         trace.stage_ms["routing"] = (time.perf_counter() - started) * 1000
 
@@ -228,15 +233,20 @@ class Copilot:
                 conflicts=len(package.conflicts),
             ) as span:
                 answer = self.answerer.answer(package, trace_id=trace.trace_id)
-                span.set(status=answer.status.value, grounded=answer.is_grounded,
-                         citations=len(answer.citations), model=answer.model)
+                span.set(
+                    status=answer.status.value,
+                    grounded=answer.is_grounded,
+                    citations=len(answer.citations),
+                    model=answer.model,
+                )
         except GenerationError as exc:
             trace.errors.append(f"generation: {exc}")
             answer = Answer(
                 question=question,
                 text=f"The answer could not be generated: {exc}",
                 status=AnswerStatus.INSUFFICIENT_EVIDENCE,
-                evidence=package, trace_id=trace.trace_id,
+                evidence=package,
+                trace_id=trace.trace_id,
             )
         trace.stage_ms["generation"] = (time.perf_counter() - started) * 1000
 
@@ -252,23 +262,25 @@ class Copilot:
     def _finish(self, trace: CopilotTrace, answer: Answer) -> None:
         """Write the trace to disk. Never allowed to fail the request."""
         try:
-            self.tracer.flush({
-                "question": trace.question,
-                "user": trace.user,
-                "tenant_id": trace.tenant_id,
-                "route": trace.routing.route.value if trace.routing else None,
-                "answer_status": answer.status.value,
-                "grounded": answer.is_grounded,
-                "citation_count": len(answer.citations),
-                "generated_sql": trace.generated_sql,
-                "sql_validation": trace.sql_validation,
-                "sql_row_count": trace.sql_row_count,
-                "model": answer.model,
-                "prompt_version": answer.prompt_version,
-                "index_version": self.settings.vector_store.index_version,
-                "errors": trace.errors,
-            })
-        except Exception as exc:  # noqa: BLE001
+            self.tracer.flush(
+                {
+                    "question": trace.question,
+                    "user": trace.user,
+                    "tenant_id": trace.tenant_id,
+                    "route": trace.routing.route.value if trace.routing else None,
+                    "answer_status": answer.status.value,
+                    "grounded": answer.is_grounded,
+                    "citation_count": len(answer.citations),
+                    "generated_sql": trace.generated_sql,
+                    "sql_validation": trace.sql_validation,
+                    "sql_row_count": trace.sql_row_count,
+                    "model": answer.model,
+                    "prompt_version": answer.prompt_version,
+                    "index_version": self.settings.vector_store.index_version,
+                    "errors": trace.errors,
+                }
+            )
+        except Exception as exc:
             log.warning("Trace flush failed: %s", exc)
 
     # -- terminal routes ---------------------------------------------------
@@ -281,7 +293,7 @@ class Copilot:
             answer = Answer(
                 question=question,
                 text=f"I cannot do that: {decision.reason}. This system is read-only "
-                     f"and can only answer questions about company documents and data.",
+                f"and can only answer questions about company documents and data.",
                 status=AnswerStatus.REFUSED,
             )
         answer.trace_id = trace.trace_id
@@ -304,8 +316,11 @@ class Copilot:
 
     # -- evidence gathering ------------------------------------------------
     def _gather_documents(
-        self, decision: RoutingDecision, user: UserContext,
-        strategy: str, trace: CopilotTrace,
+        self,
+        decision: RoutingDecision,
+        user: UserContext,
+        strategy: str,
+        trace: CopilotTrace,
     ) -> list[Evidence]:
         started = time.perf_counter()
         # For multi-source, prefer the document-facing subquestion when the
@@ -318,7 +333,9 @@ class Copilot:
         try:
             with self.tracer.span("retrieval", query=query, strategy=strategy) as span:
                 results, retrieval_trace = self.retriever.retrieve(
-                    query, strategy=strategy, user=user,
+                    query,
+                    strategy=strategy,
+                    user=user,
                     rewritten_query=None if query == decision.original_query else query,
                 )
                 span.set(
@@ -330,7 +347,7 @@ class Copilot:
                 )
             trace.retrieval = retrieval_trace
             evidence = build_document_evidence(results)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             trace.errors.append(f"retrieval: {type(exc).__name__}: {exc}")
             log.warning("Document retrieval failed: %s", exc)
             evidence = []
@@ -339,8 +356,12 @@ class Copilot:
         return evidence
 
     def _gather_sql(
-        self, decision: RoutingDecision, user: UserContext,
-        tenant_id: int | None, trace: CopilotTrace, approved: bool,
+        self,
+        decision: RoutingDecision,
+        user: UserContext,
+        tenant_id: int | None,
+        trace: CopilotTrace,
+        approved: bool,
     ) -> tuple[list[Evidence], QueryResult | None]:
         provider = self.sql_provider
         if provider is None:
@@ -355,20 +376,21 @@ class Copilot:
             query = decision.rewritten_query or decision.original_query
 
         request = SQLRequest(
-            question=query, tenant_id=tenant_id,
-            app_user=user.user_name, trace_id=trace.trace_id,
+            question=query,
+            tenant_id=tenant_id,
+            app_user=user.user_name,
+            trace_id=trace.trace_id,
         )
 
         started = time.perf_counter()
         try:
-            with self.tracer.span("sql_generation", question=query,
-                                  provider=provider.name) as span:
+            with self.tracer.span("sql_generation", question=query, provider=provider.name) as span:
                 generated = provider.generate_and_repair(request)
                 span.set(
                     sql=generated.sql,
                     tables=generated.context.table_names() if generated.context else [],
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             trace.errors.append(f"sql generation: {type(exc).__name__}: {exc}")
             trace.stage_ms["sql_generation"] = (time.perf_counter() - started) * 1000
             return [], None
@@ -382,9 +404,7 @@ class Copilot:
         started = time.perf_counter()
         try:
             with self.tracer.span("sql_execution", sql=generated.sql) as span:
-                result = provider.execute_query(
-                    generated.sql, request=request, approved=approved
-                )
+                result = provider.execute_query(generated.sql, request=request, approved=approved)
                 span.set(rows=result.row_count, duration_ms=result.duration_ms)
             trace.sql_validation = "allowed"
         except QueryBlockedError as exc:

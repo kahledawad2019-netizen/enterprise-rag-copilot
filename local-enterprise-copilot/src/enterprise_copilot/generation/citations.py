@@ -61,18 +61,20 @@ def validate_citations(text: str, package: EvidencePackage) -> list[Citation]:
     for evidence_id in extract_citation_ids(text):
         evidence = package.by_id(evidence_id)
         if evidence is not None:
-            citations.append(Citation(
-                evidence_id=evidence_id, is_valid=True, label=evidence.citation_label()
-            ))
+            citations.append(
+                Citation(evidence_id=evidence_id, is_valid=True, label=evidence.citation_label())
+            )
         else:
-            citations.append(Citation(
-                evidence_id=evidence_id,
-                is_valid=False,
-                reason=(
-                    f"cites {evidence_id}, which was not in the evidence "
-                    f"(supplied: {', '.join(sorted(valid_ids)) or 'none'})"
-                ),
-            ))
+            citations.append(
+                Citation(
+                    evidence_id=evidence_id,
+                    is_valid=False,
+                    reason=(
+                        f"cites {evidence_id}, which was not in the evidence "
+                        f"(supplied: {', '.join(sorted(valid_ids)) or 'none'})"
+                    ),
+                )
+            )
             log.warning("Fabricated citation %s in answer", evidence_id)
 
     return citations
@@ -104,10 +106,21 @@ def unused_evidence_ids(text: str, package: EvidencePackage) -> list[str]:
 # retrieval change and is deliberately not being made here, because the
 # threshold would have to be chosen against the held-out set.
 ABSTENTION_MARKERS = (
-    "no policy on", "not mention", "does not mention", "no information",
-    "not covered", "no relevant", "cannot answer", "do not have information",
-    "does not contain", "is not addressed", "no evidence", "not specified",
-    "not available in", "unable to find", "no details",
+    "no policy on",
+    "not mention",
+    "does not mention",
+    "no information",
+    "not covered",
+    "no relevant",
+    "cannot answer",
+    "do not have information",
+    "does not contain",
+    "is not addressed",
+    "no evidence",
+    "not specified",
+    "not available in",
+    "unable to find",
+    "no details",
 )
 
 
@@ -139,8 +152,7 @@ def assess_answer(answer: Answer) -> Answer:
     invalid = [c for c in answer.citations if not c.is_valid]
     if invalid:
         answer.warnings.append(
-            f"{len(invalid)} fabricated citation(s): "
-            f"{', '.join(c.evidence_id for c in invalid)}"
+            f"{len(invalid)} fabricated citation(s): {', '.join(c.evidence_id for c in invalid)}"
         )
 
     unused = unused_evidence_ids(answer.text, answer.evidence)
@@ -180,6 +192,9 @@ def format_sources(answer: Answer) -> str:
 
 
 __all__ = [
-    "assess_answer", "extract_citation_ids", "format_sources",
-    "unused_evidence_ids", "validate_citations",
+    "assess_answer",
+    "extract_citation_ids",
+    "format_sources",
+    "unused_evidence_ids",
+    "validate_citations",
 ]

@@ -52,7 +52,7 @@ class TestCleaning:
 
     def test_normalises_smart_quotes(self) -> None:
         """A query typed with a plain apostrophe must match the document text."""
-        assert clean_text("the customer’s plan") == "the customer's plan"
+        assert clean_text("the customer\u2019s plan") == "the customer's plan"
 
     def test_strips_trailing_whitespace(self) -> None:
         assert clean_text("line one   \nline two") == "line one\nline two"
@@ -135,8 +135,9 @@ class TestCorpusInvariants:
 
     def test_superseded_versions_exist(self, parsed: list) -> None:
         """Version-sensitive evaluation needs both versions present."""
-        superseded = {d.metadata.doc_id for d in parsed
-                      if d.metadata.status == DocumentStatus.SUPERSEDED}
+        superseded = {
+            d.metadata.doc_id for d in parsed if d.metadata.status == DocumentStatus.SUPERSEDED
+        }
         assert {"DOC-REF-000", "DOC-SLA-000"} <= superseded
 
     def test_superseded_documents_point_at_their_replacement(self, parsed: list) -> None:
@@ -165,9 +166,7 @@ class TestCorpusInvariants:
     def test_no_document_parses_with_warnings_about_lost_content(self, parsed: list) -> None:
         for document in parsed:
             for warning in document.warnings:
-                assert "no text" not in warning.lower(), (
-                    f"{document.metadata.doc_id}: {warning}"
-                )
+                assert "no text" not in warning.lower(), f"{document.metadata.doc_id}: {warning}"
 
 
 class TestChunking:
@@ -207,7 +206,8 @@ class TestChunking:
         # clause across two lines; the test is about the clause surviving
         # chunking, not about how the file happens to be wrapped.
         matching = [
-            c for c in chunks
+            c
+            for c in chunks
             if "pro-rata basis within the first 30 days" in " ".join(c.text.split())
         ]
         assert matching, "the 30-day refund clause was split across chunks"
@@ -216,7 +216,7 @@ class TestChunking:
         """A retrieved '| 15 minutes |' with no header is unusable."""
         document = next(d for d in parsed if d.metadata.doc_id == "DOC-SLA-001")
         for chunk in chunker.chunk_document(document):
-            rows = [l for l in chunk.text.split("\n") if l.strip().startswith("|")]
+            rows = [line for line in chunk.text.split("\n") if line.strip().startswith("|")]
             if len(rows) > 2:
                 assert any("Priority" in r or "Tier" in r or "---" in r for r in rows), (
                     f"table fragment without a header in {chunk.chunk_id}"
@@ -248,8 +248,11 @@ class TestChunking:
 
         document = ParsedDocument(
             metadata=DocumentMetadata(
-                doc_id="DOC-TMP-001", title="T", doc_type="refund_policy",
-                version="1.0", effective_date="2025-01-01",
+                doc_id="DOC-TMP-001",
+                title="T",
+                doc_type="refund_policy",
+                version="1.0",
+                effective_date="2025-01-01",
             ),
             text="x",
             sections=[Section(heading="Empty", level=2, text="   ")],

@@ -22,6 +22,7 @@ dependencies = [
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
     "python-dotenv>=1.0",
+    "requests>=2.32,<3",
     "keyring>=25.5",
 
     # --- SQL Server ---
@@ -113,15 +114,39 @@ markers = [
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# Notebooks are executable teaching artefacts and the generated copy is an
+# output, not a Python module. Lint their extracted scripts separately when
+# editing the curriculum; keep the application release gate focused on code.
+exclude = ["notebooks", "data/generated"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+# The release/type-check environment is Python 3.12. Runtime metadata still
+# permits 3.11, which should be covered by a separate CI interpreter job.
+python_version = "3.12"
 packages = ["enterprise_copilot"]
 mypy_path = "src"
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "numpy",
+    "numpy.*",
+    "pandas",
+    "pandas.*",
+    "pyodbc",
+    "yaml",
+    "sentence_transformers",
+    "sentence_transformers.*",
+    "rank_bm25",
+]
+# These runtime/optional libraries do not all publish compatible type metadata
+# across every supported Python version. Keep our code checked while treating
+# their boundaries as Any instead of making the release gate machine-specific.
+ignore_missing_imports = true
+follow_imports = "skip"

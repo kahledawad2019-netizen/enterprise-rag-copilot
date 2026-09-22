@@ -58,7 +58,7 @@ def reciprocal_rank_fusion(
         return []
     if len(live) == 1:
         fused_single = []
-        for item in (live[0][:limit] if limit else live[0]):
+        for item in live[0][:limit] if limit else live[0]:
             copy = item.model_copy()
             copy.fused_score = item.score
             copy.method = RetrievalMethod.HYBRID
@@ -68,9 +68,7 @@ def reciprocal_rank_fusion(
     if weights is None:
         weights = [1.0] * len(result_lists)
     if len(weights) != len(result_lists):
-        raise ValueError(
-            f"{len(weights)} weights for {len(result_lists)} result lists"
-        )
+        raise ValueError(f"{len(weights)} weights for {len(result_lists)} result lists")
 
     fused_scores: dict[str, float] = defaultdict(float)
     best: dict[str, ScoredChunk] = {}
@@ -233,6 +231,8 @@ def apply_authority_preference(results: list[ScoredChunk]) -> list[ScoredChunk]:
 
 
 __all__ = [
-    "apply_authority_preference", "deduplicate", "maximal_marginal_relevance",
+    "apply_authority_preference",
+    "deduplicate",
+    "maximal_marginal_relevance",
     "reciprocal_rank_fusion",
 ]

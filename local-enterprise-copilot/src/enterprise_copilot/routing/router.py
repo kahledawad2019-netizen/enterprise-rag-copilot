@@ -80,8 +80,13 @@ class Route(StrEnum):
 
 # Intent to change data. Matched on the request, not on generated SQL.
 DESTRUCTIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(delete|remove|erase|wipe|purge)\b.{0,40}\b(all|every|record|row|customer|table|data|database)\b", re.I),
-     "asks to delete data"),
+    (
+        re.compile(
+            r"\b(delete|remove|erase|wipe|purge)\b.{0,40}\b(all|every|record|row|customer|table|data|database)\b",
+            re.I,
+        ),
+        "asks to delete data",
+    ),
     # TRUNCATE is a SQL verb with no innocent English reading in this context,
     # so it is destructive on its own. DROP is ambiguous ("drop me a line"), so
     # it still needs an object.
@@ -91,27 +96,49 @@ DESTRUCTIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # slipped through to the SQL path instead of being refused - found by
     # evals/security_and_routing.jsonl case SEC-004.
     (re.compile(r"\btruncate\b", re.I), "asks to truncate data"),
-    (re.compile(
-        r"\bdrop\b.{0,30}\b(table|database|schema|index|view|log|audit|record|"
-        r"data|column|constraint|everything)\b", re.I),
-     "asks to drop a database object"),
-    (re.compile(r"\b(update|modify|change|set|alter)\b.{0,40}\b(all|every|table|column|record|row|schema)\b", re.I),
-     "asks to modify data or schema"),
+    (
+        re.compile(
+            r"\bdrop\b.{0,30}\b(table|database|schema|index|view|log|audit|record|"
+            r"data|column|constraint|everything)\b",
+            re.I,
+        ),
+        "asks to drop a database object",
+    ),
+    (
+        re.compile(
+            r"\b(update|modify|change|set|alter)\b.{0,40}\b(all|every|table|column|record|row|schema)\b",
+            re.I,
+        ),
+        "asks to modify data or schema",
+    ),
     (re.compile(r"\binsert\s+into\b", re.I), "asks to insert data"),
-    (re.compile(r"\b(grant|revoke)\b.{0,30}\b(access|permission|admin|role|privilege)\b", re.I),
-     "asks to change permissions"),
-    (re.compile(r"\b(disable|bypass|turn\s+off)\b.{0,30}\b(security|guard|restriction|validation|filter)\b", re.I),
-     "asks to disable a security control"),
+    (
+        re.compile(r"\b(grant|revoke)\b.{0,30}\b(access|permission|admin|role|privilege)\b", re.I),
+        "asks to change permissions",
+    ),
+    (
+        re.compile(
+            r"\b(disable|bypass|turn\s+off)\b.{0,30}\b(security|guard|restriction|validation|filter)\b",
+            re.I,
+        ),
+        "asks to disable a security control",
+    ),
 )
 
 # Attempts to extract system internals or credentials.
 EXFILTRATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(connection\s+string|password|credential|secret|api[_\s]?key)\b", re.I),
-     "asks for credentials"),
-    (re.compile(r"\b(system\s+prompt|your\s+instructions?|environment\s+variables?)\b", re.I),
-     "asks to reveal system configuration"),
-    (re.compile(r"\bignore\s+(all\s+)?(previous|prior|above)\s+instructions?\b", re.I),
-     "attempts to override system instructions"),
+    (
+        re.compile(r"\b(connection\s+string|password|credential|secret|api[_\s]?key)\b", re.I),
+        "asks for credentials",
+    ),
+    (
+        re.compile(r"\b(system\s+prompt|your\s+instructions?|environment\s+variables?)\b", re.I),
+        "asks to reveal system configuration",
+    ),
+    (
+        re.compile(r"\bignore\s+(all\s+)?(previous|prior|above)\s+instructions?\b", re.I),
+        "attempts to override system instructions",
+    ),
     (re.compile(r"\b(unrestricted|developer)\s+mode\b", re.I), "attempts to change operating mode"),
 )
 
@@ -129,14 +156,16 @@ IDENTIFIER_PATTERN = re.compile(
 SQL_SIGNALS = re.compile(
     r"\b(how many|how much|count|total|sum|average|avg|top \d+|highest|lowest|"
     r"per (month|quarter|year|region|customer|product)|trend|rank|list all|"
-    r"breakdown|compare .* (revenue|arr|mrr|churn)|which customers?)\b", re.I
+    r"breakdown|compare .* (revenue|arr|mrr|churn)|which customers?)\b",
+    re.I,
 )
 
 # Strong signals that a question is about written policy.
 DOC_SIGNALS = re.compile(
     r"\b(policy|policies|procedure|guideline|sla|contract|terms|what does .* mean|"
     r"definition of|how do (we|i)|process for|escalation|postmortem|root cause|"
-    r"entitled to|allowed to|required to)\b", re.I
+    r"entitled to|allowed to|required to)\b",
+    re.I,
 )
 
 # Both at once: the defining shape of a multi-source question.
@@ -144,15 +173,23 @@ MULTI_SIGNALS = re.compile(
     r"\b(and (also )?(summari[sz]e|explain|what does)|compare .* with .*|"
     r"versus|vs\.?|against the (policy|sla|contract)|"
     r"(policy|sla|contract).{0,40}(actual|real|measured)|"
-    r"(actual|real|measured).{0,40}(policy|sla|contract))\b", re.I
+    r"(actual|real|measured).{0,40}(policy|sla|contract))\b",
+    re.I,
 )
 
 # Vague references that cannot be answered without knowing which one is meant.
 AMBIGUITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^\s*(what|which|how)\s+(is|are|was)\s+the\s+(policy|response time|number|value|rate|score)\s*\??\s*$", re.I),
-     "which policy or metric is meant is not stated"),
-    (re.compile(r"^\s*tell me about\s+\w+\s*\.?\s*$", re.I),
-     "the subject is named too loosely to identify"),
+    (
+        re.compile(
+            r"^\s*(what|which|how)\s+(is|are|was)\s+the\s+(policy|response time|number|value|rate|score)\s*\??\s*$",
+            re.I,
+        ),
+        "which policy or metric is meant is not stated",
+    ),
+    (
+        re.compile(r"^\s*tell me about\s+\w+\s*\.?\s*$", re.I),
+        "the subject is named too loosely to identify",
+    ),
 )
 
 
@@ -165,7 +202,7 @@ class RoutingDecision:
     rewritten_query: str = ""
     reason: str = ""
     confidence: float = 0.0
-    decided_by: str = "rules"           # rules | llm | fallback
+    decided_by: str = "rules"  # rules | llm | fallback
 
     identifiers: list[str] = field(default_factory=list)
     dates: list[str] = field(default_factory=list)
@@ -268,9 +305,14 @@ class QueryRouter:
         blocked = self._check_forbidden(question)
         if blocked is not None:
             return RoutingDecision(
-                route=Route.REFUSE, original_query=question, rewritten_query=question,
-                reason=blocked, confidence=1.0, decided_by="rules",
-                identifiers=identifiers, dates=dates,
+                route=Route.REFUSE,
+                original_query=question,
+                rewritten_query=question,
+                reason=blocked,
+                confidence=1.0,
+                decided_by="rules",
+                identifiers=identifiers,
+                dates=dates,
             )
 
         # ---- Then the semantic screen, on what the rules already cleared.
@@ -283,19 +325,28 @@ class QueryRouter:
             verdict = self.intent_screen.screen(question)
             if verdict.refuse:
                 return RoutingDecision(
-                    route=Route.REFUSE, original_query=question, rewritten_query=question,
-                    reason=verdict.explanation, confidence=verdict.confidence,
+                    route=Route.REFUSE,
+                    original_query=question,
+                    rewritten_query=question,
+                    reason=verdict.explanation,
+                    confidence=verdict.confidence,
                     decided_by="llm_intent_screen",
-                    identifiers=identifiers, dates=dates,
+                    identifiers=identifiers,
+                    dates=dates,
                 )
             self._last_intent_verdict = verdict
 
         ambiguous = self._check_ambiguous(question)
         if ambiguous is not None:
             return RoutingDecision(
-                route=Route.CLARIFY, original_query=question, rewritten_query=question,
-                reason=ambiguous, confidence=0.9, decided_by="rules",
-                identifiers=identifiers, dates=dates,
+                route=Route.CLARIFY,
+                original_query=question,
+                rewritten_query=question,
+                reason=ambiguous,
+                confidence=0.9,
+                decided_by="rules",
+                identifiers=identifiers,
+                dates=dates,
             )
 
         # ---- Then the model, for the genuinely fuzzy distinction.
@@ -328,32 +379,38 @@ class QueryRouter:
         self, question: str, identifiers: list[str], dates: list[str]
     ) -> RoutingDecision | None:
         try:
-            if self._client is None:
+            client = self._client
+            if client is None:
                 from ..llm import build_chat_client
 
-                self._client = build_chat_client(self.settings)
+                client = build_chat_client(self.settings)
+                self._client = client
 
-            response = self._client.chat(
+            response = client.chat(
                 model=self.settings.chat_model,
                 messages=[
                     {"role": "system", "content": ROUTER_SYSTEM},
                     {"role": "user", "content": f"Question: {question}"},
                 ],
                 format="json",
-                options={"temperature": 0.0, "num_predict": 300,
-                         "num_ctx": self.settings.profile.chat_context_tokens},
+                options={
+                    "temperature": 0.0,
+                    "num_predict": 300,
+                    "num_ctx": self.settings.profile.chat_context_tokens,
+                },
                 keep_alive=self.settings.ollama.keep_alive,
             )
             payload = json.loads(response["message"]["content"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("LLM routing failed (%s); falling back to heuristics", exc)
             return None
 
         try:
             route = Route(str(payload.get("route", "")).strip().lower())
         except ValueError:
-            log.warning("Router returned an unknown route %r; using heuristics",
-                        payload.get("route"))
+            log.warning(
+                "Router returned an unknown route %r; using heuristics", payload.get("route")
+            )
             return None
 
         # The model must not refuse or clarify: those are rule decisions, and
@@ -374,9 +431,11 @@ class QueryRouter:
             identifiers=identifiers,
             dates=dates,
             document_subquestion=_clean_subquestion(payload.get("document_subquestion"))
-            if route is Route.MULTI_SOURCE else None,
+            if route is Route.MULTI_SOURCE
+            else None,
             data_subquestion=_clean_subquestion(payload.get("data_subquestion"))
-            if route is Route.MULTI_SOURCE else None,
+            if route is Route.MULTI_SOURCE
+            else None,
         )
 
     def _classify_with_heuristics(
@@ -401,9 +460,14 @@ class QueryRouter:
             route, reason = Route.DOCUMENT_RAG, "no strong signal; documents are the safer default"
 
         return RoutingDecision(
-            route=route, original_query=question, rewritten_query=question,
-            reason=reason, confidence=0.6, decided_by="fallback",
-            identifiers=identifiers, dates=dates,
+            route=route,
+            original_query=question,
+            rewritten_query=question,
+            reason=reason,
+            confidence=0.6,
+            decided_by="fallback",
+            identifiers=identifiers,
+            dates=dates,
         )
 
     # -- rewriting ---------------------------------------------------------

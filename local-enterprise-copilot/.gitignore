@@ -29,8 +29,15 @@ evals/baselines/*.local.json
 
 # ---- Models / caches ----
 .cache/
-models/
+/models/
 *.onnx
+
+# ---- Cloud/deployment secrets and local state ----
+.dev.vars
+.dev.vars.*
+.streamlit/secrets.toml
+.wrangler/
+*.tunnel.json
 
 # ---- Python ----
 __pycache__/

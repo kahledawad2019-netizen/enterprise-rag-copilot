@@ -169,12 +169,23 @@ export interface Comparison {
 }
 
 export interface EvaluationReport {
+  baseline_id: string;
+  generated_at_utc: string;
+  source_artifact: string;
   cases: number;
   k: number;
   bootstrap_resamples: number;
   strategies: StrategyScore[];
   comparisons: Comparison[];
   headline: string;
+  current: boolean;
+  stale_reasons: string[];
+  evaluated_embedding_provider: string;
+  evaluated_embedding_model: string;
+  evaluated_index_version: string;
+  live_embedding_provider: string;
+  live_embedding_model: string;
+  live_index_version: string;
 }
 
 export interface EvaluationResponse {

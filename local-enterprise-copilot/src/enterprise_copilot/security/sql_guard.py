@@ -35,12 +35,19 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import cast
 
 import sqlglot
 from sqlglot import exp
 
 from ..config import Settings, get_settings
-from .tenant_injection import inject_tenant_predicate
+from .tenant_injection import (
+    TENANT_COLUMN,
+    filtering_clauses,
+    inject_tenant_predicate,
+    qualifier_for,
+    tenant_scoped_tables,
+)
 
 log = logging.getLogger(__name__)
 
@@ -98,16 +105,33 @@ class ValidationResult:
 # Statement types that are never permitted. Checked on the parsed tree, so a
 # comment or an unusual spelling cannot disguise them.
 FORBIDDEN_NODES: tuple[type[exp.Expression], ...] = (
-    exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter,
-    exp.Merge, exp.TruncateTable, exp.Grant,
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Drop,
+    exp.Create,
+    exp.Alter,
+    exp.Merge,
+    exp.TruncateTable,
+    exp.Grant,
 )
 
 # Constructs that indicate an attempt to reach outside the query, or to
 # obfuscate. `WaitFor` is the classic time-based blind-injection primitive.
 SUSPICIOUS_FUNCTIONS = {
-    "openrowset", "opendatasource", "openquery", "openxml",
-    "xp_cmdshell", "sp_executesql", "sp_oacreate", "sp_configure",
-    "bulk_insert", "waitfor", "dbcc", "sp_addlogin", "sp_password",
+    "openrowset",
+    "opendatasource",
+    "openquery",
+    "openxml",
+    "xp_cmdshell",
+    "sp_executesql",
+    "sp_oacreate",
+    "sp_configure",
+    "bulk_insert",
+    "waitfor",
+    "dbcc",
+    "sp_addlogin",
+    "sp_password",
 }
 
 # Second-pass regex. Defence in depth only: the parser is authoritative.
@@ -148,13 +172,15 @@ class SQLGuard:
         try:
             statements = sqlglot.parse(sql, read=DIALECT)
         except Exception as exc:
-            result.violations.append((
-                Violation.PARSE_ERROR,
-                f"could not be parsed as T-SQL: {str(exc)[:200]}",
-            ))
+            result.violations.append(
+                (
+                    Violation.PARSE_ERROR,
+                    f"could not be parsed as T-SQL: {str(exc)[:200]}",
+                )
+            )
             return result
 
-        statements = [s for s in statements if s is not None]
+        statements = [s for s in statements if isinstance(s, exp.Expression)]
 
         if not statements:
             result.violations.append((Violation.EMPTY_QUERY, "no statement found"))
@@ -163,13 +189,15 @@ class SQLGuard:
         # ---- 2. exactly one statement ----
         if len(statements) > 1:
             kinds = ", ".join(type(s).__name__ for s in statements)
-            result.violations.append((
-                Violation.MULTIPLE_STATEMENTS,
-                f"{len(statements)} statements found ({kinds}); only one SELECT is allowed",
-            ))
+            result.violations.append(
+                (
+                    Violation.MULTIPLE_STATEMENTS,
+                    f"{len(statements)} statements found ({kinds}); only one SELECT is allowed",
+                )
+            )
             return result
 
-        statement = statements[0]
+        statement = cast(exp.Expression, statements[0])
 
         # ---- 3. must be a read ----
         self._check_is_select(statement, result)
@@ -186,9 +214,25 @@ class SQLGuard:
         self._check_raw_patterns(sql, result)
 
         # ---- 6. tenant isolation ----
-        enforce = self.security.enforce_tenant_isolation if enforce_tenant is None else enforce_tenant
-        if enforce and tenant_id is not None:
-            self._check_tenant(statement, result, tenant_id)
+        enforce = (
+            self.security.enforce_tenant_isolation if enforce_tenant is None else enforce_tenant
+        )
+        if enforce:
+            if tenant_id is None:
+                exempt = {e.lower() for e in getattr(self.security, "tenant_exempt_objects", ())}
+                touches_tenant_data = any(
+                    tenant_scoped_tables(select, exempt)
+                    for select in statement.find_all(exp.Select)
+                )
+                if touches_tenant_data:
+                    result.violations.append(
+                        (
+                            Violation.MISSING_TENANT_FILTER,
+                            "tenant-scoped data requires a verified caller tenant context",
+                        )
+                    )
+            else:
+                self._check_tenant(statement, result, tenant_id)
 
         # A MISSING tenant predicate is repairable: adding one can only narrow
         # the result to the caller's own tenant. A WRONG tenant predicate is
@@ -213,7 +257,8 @@ class SQLGuard:
         right to refuse; the product still failed.
         """
         missing = [
-            (violation, detail) for violation, detail in result.violations
+            (violation, detail)
+            for violation, detail in result.violations
             if violation is Violation.MISSING_TENANT_FILTER
         ]
         if not missing or len(result.violations) != len(missing):
@@ -227,13 +272,21 @@ class SQLGuard:
         if rewritten is None:
             return statement
 
+        # Never trust the rewriter merely because it returned an AST.  Prove
+        # the same invariant again on the rewritten tree before removing the
+        # original violation.
+        post_check = ValidationResult(is_safe=False, sql=rewritten.sql(dialect=DIALECT))
+        self._check_tenant(rewritten, post_check, tenant_id)
+        if post_check.violations:
+            log.warning("Tenant injection did not revalidate: %s", post_check.reason)
+            return statement
+
         result.violations = [
             v for v in result.violations if v[0] is not Violation.MISSING_TENANT_FILTER
         ]
         result.tenant_injected = True
         result.warnings.append(
-            "tenant filter was missing and has been added automatically: "
-            + "; ".join(injections)
+            "tenant filter was missing and has been added automatically: " + "; ".join(injections)
         )
         log.info("Injected tenant predicate: %s", injections)
         return rewritten
@@ -242,38 +295,41 @@ class SQLGuard:
     def _check_is_select(self, statement: exp.Expression, result: ValidationResult) -> None:
         # A CTE parses as Select with a `with` arg, so both are reads.
         if not isinstance(statement, (exp.Select, exp.Union, exp.Subquery)):
-            result.violations.append((
-                Violation.NOT_A_SELECT,
-                f"statement is {type(statement).__name__}, not a SELECT",
-            ))
+            result.violations.append(
+                (
+                    Violation.NOT_A_SELECT,
+                    f"statement is {type(statement).__name__}, not a SELECT",
+                )
+            )
 
     def _check_no_write_nodes(self, statement: exp.Expression, result: ValidationResult) -> None:
         """Any write node anywhere in the tree, including inside a subquery."""
         for node_type in FORBIDDEN_NODES:
             found = list(statement.find_all(node_type))
             if found:
-                result.violations.append((
-                    Violation.WRITE_OPERATION,
-                    f"contains a {node_type.__name__.upper()} operation",
-                ))
+                result.violations.append(
+                    (
+                        Violation.WRITE_OPERATION,
+                        f"contains a {node_type.__name__.upper()} operation",
+                    )
+                )
 
         # SELECT ... INTO creates a table. It parses as a Select, so the
         # statement-type check above does not catch it.
         if isinstance(statement, exp.Select) and statement.args.get("into"):
-            result.violations.append((
-                Violation.WRITE_OPERATION,
-                "SELECT ... INTO creates a table",
-            ))
+            result.violations.append(
+                (
+                    Violation.WRITE_OPERATION,
+                    "SELECT ... INTO creates a table",
+                )
+            )
 
     def _collect_targets(self, statement: exp.Expression, result: ValidationResult) -> None:
         tables: set[str] = set()
         schemas: set[str] = set()
 
         # CTE names are not real tables and must not be treated as such.
-        cte_names = {
-            cte.alias_or_name.lower()
-            for cte in statement.find_all(exp.CTE)
-        }
+        cte_names = {cte.alias_or_name.lower() for cte in statement.find_all(exp.CTE)}
 
         for table in statement.find_all(exp.Table):
             name = table.name
@@ -299,20 +355,24 @@ class SQLGuard:
         allowed = {s.lower() for s in self.security.allowed_schemas}
         for schema in result.schemas:
             if schema not in allowed:
-                result.violations.append((
-                    Violation.FORBIDDEN_SCHEMA,
-                    f"schema '{schema}' is not readable (allowed: {', '.join(sorted(allowed))})",
-                ))
+                result.violations.append(
+                    (
+                        Violation.FORBIDDEN_SCHEMA,
+                        f"schema '{schema}' is not readable (allowed: {', '.join(sorted(allowed))})",
+                    )
+                )
 
         # An unqualified table name cannot be checked against the schema
         # allow-list, so it is refused rather than assumed safe.
         for table in result.tables:
             if "." not in table:
-                result.violations.append((
-                    Violation.FORBIDDEN_SCHEMA,
-                    f"table '{table}' is not schema-qualified; "
-                    f"use analytics.<view> or <schema>.<table>",
-                ))
+                result.violations.append(
+                    (
+                        Violation.FORBIDDEN_SCHEMA,
+                        f"table '{table}' is not schema-qualified; "
+                        f"use analytics.<view> or <schema>.<table>",
+                    )
+                )
 
     def _check_columns(self, statement: exp.Expression, result: ValidationResult) -> None:
         blocked = {c.lower() for c in self.security.blocked_columns}
@@ -323,10 +383,12 @@ class SQLGuard:
             if name:
                 seen.add(name)
             if name in blocked:
-                result.violations.append((
-                    Violation.FORBIDDEN_COLUMN,
-                    f"column '{column.name}' is not readable",
-                ))
+                result.violations.append(
+                    (
+                        Violation.FORBIDDEN_COLUMN,
+                        f"column '{column.name}' is not readable",
+                    )
+                )
 
         # `SELECT *` could pull a blocked column without ever naming it.
         if any(isinstance(e, exp.Star) for e in statement.find_all(exp.Star)):
@@ -340,26 +402,32 @@ class SQLGuard:
     def _check_joins(self, statement: exp.Expression, result: ValidationResult) -> None:
         result.join_count = len(list(statement.find_all(exp.Join)))
         if result.join_count > self.security.max_sql_joins:
-            result.violations.append((
-                Violation.TOO_MANY_JOINS,
-                f"{result.join_count} joins exceeds the limit of "
-                f"{self.security.max_sql_joins}; this is usually a runaway query",
-            ))
+            result.violations.append(
+                (
+                    Violation.TOO_MANY_JOINS,
+                    f"{result.join_count} joins exceeds the limit of "
+                    f"{self.security.max_sql_joins}; this is usually a runaway query",
+                )
+            )
 
     def _check_suspicious(self, statement: exp.Expression, result: ValidationResult) -> None:
         for function in statement.find_all(exp.Anonymous):
             name = (function.this or "").lower() if isinstance(function.this, str) else ""
             if name in SUSPICIOUS_FUNCTIONS:
-                result.violations.append((
-                    Violation.SUSPICIOUS_CONSTRUCT,
-                    f"function '{name}' is not permitted",
-                ))
+                result.violations.append(
+                    (
+                        Violation.SUSPICIOUS_CONSTRUCT,
+                        f"function '{name}' is not permitted",
+                    )
+                )
 
         for command in statement.find_all(exp.Command):
-            result.violations.append((
-                Violation.SUSPICIOUS_CONSTRUCT,
-                f"raw command '{str(command)[:60]}' is not permitted",
-            ))
+            result.violations.append(
+                (
+                    Violation.SUSPICIOUS_CONSTRUCT,
+                    f"raw command '{str(command)[:60]}' is not permitted",
+                )
+            )
 
     def _check_raw_patterns(self, sql: str, result: ValidationResult) -> None:
         """Second pass over the raw text.
@@ -379,9 +447,9 @@ class SQLGuard:
             if description == "statement separator followed by more SQL":
                 # Already definitively handled by the parse-based count.
                 continue
-            result.violations.append((
-                Violation.SUSPICIOUS_CONSTRUCT, f"raw text contains {description}"
-            ))
+            result.violations.append(
+                (Violation.SUSPICIOUS_CONSTRUCT, f"raw text contains {description}")
+            )
 
     def _check_tenant(
         self, statement: exp.Expression, result: ValidationResult, tenant_id: int
@@ -392,62 +460,85 @@ class SQLGuard:
         mentioned inside a string literal or a comment does not satisfy it.
         """
         exempt = {o.lower() for o in getattr(self.security, "tenant_exempt_objects", ())}
-        touches_tenant_data = any(
-            t.lower().startswith(("core.", "billing.", "support.", "analytics."))
-            and t.lower() not in exempt
-            for t in result.tables
-        )
-        if not touches_tenant_data:
-            # Reference data (products, plans, SLA policies) and the calendar
-            # helper carry no tenant_id column at all. Requiring a predicate on
-            # them yields SQL that fails at the server with "Invalid column
-            # name 'tenant_id'", turning a safety rule into a correctness bug.
-            return
+        exempt = {e.lower() for e in getattr(self.security, "tenant_exempt_objects", ())}
 
-        # Only a tenant_id in a FILTERING position counts. Searching the whole
-        # statement treated `SELECT DISTINCT tenant_id FROM ...` as "already
-        # referenced", which produced a cross_tenant verdict on a query that
-        # merely projected the column and had no predicate at all - the wrong
-        # diagnosis, and it made a repairable query unrepairable.
-        filtering: list[exp.Column] = []
+        def is_conjunctive(equality: exp.EQ, owner: exp.Select) -> bool:
+            """The equality must not be weakened by OR or inverted by NOT."""
+            node = equality.parent
+            while node is not None and node is not owner:
+                if isinstance(node, (exp.Or, exp.Not)):
+                    return False
+                node = node.parent
+            return node is owner
+
         for select in statement.find_all(exp.Select):
-            for clause_name in ("where", "having"):
-                clause = select.args.get(clause_name)
-                if clause is not None:
-                    filtering.extend(
-                        c for c in clause.find_all(exp.Column)
-                        if (c.name or "").lower() == "tenant_id"
+            tables = tenant_scoped_tables(select, exempt)
+            if not tables:
+                continue
+
+            clauses = filtering_clauses(select)
+            tenant_columns = [
+                column
+                for clause in clauses
+                for column in clause.find_all(exp.Column)
+                if column.find_ancestor(exp.Select) is select
+                and (column.name or "").lower() == TENANT_COLUMN
+            ]
+            multiple_sources = len({table.alias_or_name for table in tables}) > 1
+
+            for table in tables:
+                qualifier = (qualifier_for(select, table) or table.alias_or_name or "").lower()
+                restricted = False
+
+                for clause in clauses:
+                    for equality in clause.find_all(exp.EQ):
+                        if equality.find_ancestor(exp.Select) is not select:
+                            continue
+                        if not is_conjunctive(equality, select):
+                            continue
+                        for side, other in (
+                            (equality.left, equality.right),
+                            (equality.right, equality.left),
+                        ):
+                            if not isinstance(side, exp.Column):
+                                continue
+                            if (side.name or "").lower() != TENANT_COLUMN:
+                                continue
+                            column_qualifier = (side.table or "").lower()
+                            if multiple_sources and column_qualifier != qualifier:
+                                continue
+                            if not multiple_sources and column_qualifier not in (
+                                "",
+                                qualifier,
+                                (table.name or "").lower(),
+                            ):
+                                continue
+                            if isinstance(other, exp.Literal) and str(other.this) == str(tenant_id):
+                                restricted = True
+                                break
+                        if restricted:
+                            break
+                    if restricted:
+                        break
+
+                if restricted:
+                    continue
+
+                target = f"{table.db}.{table.name}"
+                if tenant_columns:
+                    result.violations.append(
+                        (
+                            Violation.CROSS_TENANT,
+                            f"{target} is not unconditionally restricted to tenant_id = {tenant_id}",
+                        )
                     )
-        for join in statement.find_all(exp.Join):
-            condition = join.args.get("on")
-            if condition is not None:
-                filtering.extend(
-                    c for c in condition.find_all(exp.Column)
-                    if (c.name or "").lower() == "tenant_id"
-                )
-
-        if not filtering:
-            result.violations.append((
-                Violation.MISSING_TENANT_FILTER,
-                f"query reads tenant-scoped data without a tenant_id predicate "
-                f"(expected tenant_id = {tenant_id})",
-            ))
-            return
-
-        # Look for an equality against this tenant specifically.
-        for equality in statement.find_all(exp.EQ):
-            left, right = equality.left, equality.right
-            for side, other in ((left, right), (right, left)):
-                if isinstance(side, exp.Column) and (side.name or "").lower() == "tenant_id":
-                    if isinstance(other, exp.Literal) and str(other.this) == str(tenant_id):
-                        return
-                    if isinstance(other, exp.Placeholder | exp.Parameter):
-                        return  # parameterised; bound at execution
-
-        result.violations.append((
-            Violation.CROSS_TENANT,
-            f"tenant_id is referenced but not restricted to {tenant_id}",
-        ))
+                else:
+                    result.violations.append(
+                        (
+                            Violation.MISSING_TENANT_FILTER,
+                            f"{target} has no tenant_id = {tenant_id} predicate",
+                        )
+                    )
 
     def _apply_row_limit(self, statement: exp.Expression) -> str | None:
         """Add TOP (n) when the query has no explicit limit.

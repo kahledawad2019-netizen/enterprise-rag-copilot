@@ -36,7 +36,10 @@ def run_provider(provider, request, *, show_context: bool, approve: bool) -> int
 
     if show_context and generated.context:
         print("\n  schema offered   :", ", ".join(generated.context.table_names()))
-        print("  glossary terms   :", ", ".join(g["term"] for g in generated.context.glossary) or "(none)")
+        print(
+            "  glossary terms   :",
+            ", ".join(g["term"] for g in generated.context.glossary) or "(none)",
+        )
         print("  approved examples:", len(generated.context.examples))
 
     print(f"\n  generation: {generated.generation_ms:.0f} ms")
@@ -82,8 +85,11 @@ def run_provider(provider, request, *, show_context: bool, approve: bool) -> int
     print("\n  --- ANSWER ---")
     explanation = provider.explain_result(request.question, result)
     for line in explanation.split("\n"):
-        print(textwrap.fill(line, width=84, initial_indent="    ", subsequent_indent="    ")
-              if line.strip() else "")
+        print(
+            textwrap.fill(line, width=84, initial_indent="    ", subsequent_indent="    ")
+            if line.strip()
+            else ""
+        )
 
     print(f"\n  trace: {provider.get_trace_metadata()}")
     return 0
@@ -112,8 +118,10 @@ def main() -> int:
     settings = get_settings()
     question = " ".join(args.question)
     request = SQLRequest(
-        question=question, tenant_id=args.tenant,
-        app_user=args.user, trace_id=uuid.uuid4().hex[:12],
+        question=question,
+        tenant_id=args.tenant,
+        app_user=args.user,
+        trace_id=uuid.uuid4().hex[:12],
     )
 
     print("=" * 88)

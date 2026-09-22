@@ -4,6 +4,13 @@ from .profiles import PROFILES, ModelProfile, ProfileName, get_profile, recommen
 from .settings import PROJECT_ROOT, Settings, get_settings, reset_settings_cache
 
 __all__ = [
-    "PROFILES", "ModelProfile", "ProfileName", "get_profile", "recommend_profile",
-    "PROJECT_ROOT", "Settings", "get_settings", "reset_settings_cache",
+    "PROFILES",
+    "PROJECT_ROOT",
+    "ModelProfile",
+    "ProfileName",
+    "Settings",
+    "get_profile",
+    "get_settings",
+    "recommend_profile",
+    "reset_settings_cache",
 ]

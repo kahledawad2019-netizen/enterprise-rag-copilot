@@ -56,8 +56,7 @@ class TestPagesLoad:
     def test_page_renders_without_raising(self, page: str) -> None:
         app = run_page(page)
         assert not app.exception, (
-            f"{page} raised on load: "
-            f"{[str(e.value)[:300] for e in app.exception]}"
+            f"{page} raised on load: {[str(e.value)[:300] for e in app.exception]}"
         )
 
     @pytest.mark.integration
@@ -68,8 +67,7 @@ class TestPagesLoad:
         except Exception as exc:
             pytest.skip(f"page needs a service that is unavailable: {exc}")
         assert not app.exception, (
-            f"{page} raised on load: "
-            f"{[str(e.value)[:300] for e in app.exception]}"
+            f"{page} raised on load: {[str(e.value)[:300] for e in app.exception]}"
         )
 
 

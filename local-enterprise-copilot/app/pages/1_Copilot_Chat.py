@@ -29,7 +29,7 @@ from enterprise_copilot.retrieval.hybrid import UserContext  # noqa: E402
 STATUS_STYLE = {
     AnswerStatus.ANSWERED: ("✅", "Answered from evidence"),
     AnswerStatus.PARTIAL: ("⚠️", "Answered, but nothing was cited"),
-    AnswerStatus.INSUFFICIENT_EVIDENCE: ("ℹ️", "No relevant evidence found"),
+    AnswerStatus.INSUFFICIENT_EVIDENCE: ("i", "No relevant evidence found"),
     AnswerStatus.CONFLICTING_SOURCES: ("⚠️", "Sources disagree — see the note"),
     AnswerStatus.REFUSED: ("🚫", "Refused"),
     AnswerStatus.CLARIFICATION_NEEDED: ("❓", "Needs clarification"),
@@ -49,15 +49,15 @@ def render_answer(answer, trace) -> None:
 
     columns = st.columns([1, 1, 1, 1])
     columns[0].metric("Route", route)
-    columns[1].metric("Citations", f"{sum(1 for c in answer.citations if c.is_valid)}"
-                                   f"/{len(answer.citations)}")
+    columns[1].metric(
+        "Citations", f"{sum(1 for c in answer.citations if c.is_valid)}/{len(answer.citations)}"
+    )
     columns[2].metric("Grounded", "yes" if answer.is_grounded else "no")
     columns[3].metric("Latency", f"{trace.total_ms / 1000:.1f}s")
 
     st.caption(ROUTE_HELP.get(route, ""))
     if trace.routing and trace.routing.reason:
-        st.caption(f"Router: {trace.routing.reason} "
-                   f"(decided by {trace.routing.decided_by})")
+        st.caption(f"Router: {trace.routing.reason} (decided by {trace.routing.decided_by})")
 
     icon, label = STATUS_STYLE.get(answer.status, ("", answer.status.value))
     if answer.status in (AnswerStatus.ANSWERED,):
@@ -82,8 +82,11 @@ def render_answer(answer, trace) -> None:
 
     # --- result table and chart ---
     if answer.evidence:
-        sql_evidence = [e for e in answer.evidence.all_evidence
-                        if e.evidence_type is EvidenceType.SQL_RESULT and e.structured]
+        sql_evidence = [
+            e
+            for e in answer.evidence.all_evidence
+            if e.evidence_type is EvidenceType.SQL_RESULT and e.structured
+        ]
         for evidence in sql_evidence:
             rows = evidence.structured.get("rows") or []
             if not rows:
@@ -145,7 +148,9 @@ def _maybe_chart(frame) -> None:
         import plotly.express as express
 
         figure = express.bar(
-            frame.head(25), x=labels[0], y=numeric[0],
+            frame.head(25),
+            x=labels[0],
+            y=numeric[0],
             title=f"{numeric[0]} by {labels[0]}",
         )
         figure.update_layout(height=380, margin=dict(l=10, r=10, t=44, b=10))
@@ -183,8 +188,10 @@ def main() -> None:
 
     tenant_code, tenant_id, groups = USERS[user_name]
     context = UserContext(
-        user_name=user_name, tenant=tenant_code,
-        access_groups=groups, is_admin=user_name == "admin",
+        user_name=user_name,
+        tenant=tenant_code,
+        access_groups=groups,
+        is_admin=user_name == "admin",
     )
 
     with st.chat_message("assistant"):
@@ -202,12 +209,13 @@ def main() -> None:
 
         render_answer(answer, trace)
 
-    st.session_state["messages"].append({
-        "role": "assistant",
-        "content": answer.text + (
-            f"\n\n*{sum(1 for c in answer.citations if c.is_valid)} sources cited*"
-        ),
-    })
+    st.session_state["messages"].append(
+        {
+            "role": "assistant",
+            "content": answer.text
+            + (f"\n\n*{sum(1 for c in answer.citations if c.is_valid)} sources cited*"),
+        }
+    )
 
 
 main()

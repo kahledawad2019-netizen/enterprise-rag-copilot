@@ -26,10 +26,10 @@ import json
 import logging
 import time
 import uuid
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ class Span:
     parent_span_id: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
     duration_ms: float = 0.0
-    status: str = "ok"                      # ok | error
+    status: str = "ok"  # ok | error
     attributes: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
@@ -147,11 +147,12 @@ class Tracer:
             if span.error:
                 otel_span.set_attribute("error", span.error)
             otel_span.end()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._otel_failed = True
             log.warning(
                 "OpenTelemetry export disabled for this process (%s). "
-                "Tracing continues to local files.", exc,
+                "Tracing continues to local files.",
+                exc,
             )
 
     def _ensure_otel(self):
@@ -167,15 +168,18 @@ class Tracer:
             provider = TracerProvider(
                 resource=Resource.create({"service.name": "enterprise-copilot"})
             )
-            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
-                endpoint=self.settings.observability.phoenix_endpoint
-            )))
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    OTLPSpanExporter(endpoint=self.settings.observability.phoenix_endpoint)
+                )
+            )
             trace.set_tracer_provider(provider)
             self._otel_tracer = trace.get_tracer("enterprise_copilot")
-            log.info("OpenTelemetry export enabled -> %s",
-                     self.settings.observability.phoenix_endpoint)
+            log.info(
+                "OpenTelemetry export enabled -> %s", self.settings.observability.phoenix_endpoint
+            )
             return self._otel_tracer
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._otel_failed = True
             log.warning("OpenTelemetry unavailable (%s); local tracing only", exc)
             return None
@@ -186,11 +190,11 @@ class Tracer:
         if not self.enabled or not self.spans:
             return None
 
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        day = datetime.now(UTC).strftime("%Y%m%d")
         path = self.trace_dir / f"traces_{day}.jsonl"
         record = {
             "trace_id": self.trace_id,
-            "recorded_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "recorded_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "total_ms": round(sum(s.duration_ms for s in self.spans), 2),
             "span_count": len(self.spans),
             "spans": [s.to_dict() for s in self.spans],
@@ -199,7 +203,7 @@ class Tracer:
         try:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, default=str) + "\n")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("Could not write the trace file: %s", exc)
             return None
         return path
@@ -232,9 +236,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(
-                timespec="milliseconds"
-            ),
+            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -261,23 +263,25 @@ def configure_logging(settings: Settings | None = None) -> None:
     if observability.log_format == "json":
         console.setFormatter(JsonFormatter())
     else:
-        console.setFormatter(logging.Formatter(
-            "%(asctime)s | %(levelname)-7s | %(name)-38s | %(message)s",
-            datefmt="%H:%M:%S",
-        ))
+        console.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(levelname)-7s | %(name)-38s | %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
     root.addHandler(console)
 
     # Structured file log is always JSON, whatever the console shows: it is
     # meant to be parsed, not read.
     try:
         observability.log_dir.mkdir(parents=True, exist_ok=True)
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        day = datetime.now(UTC).strftime("%Y%m%d")
         file_handler = logging.FileHandler(
             observability.log_dir / f"copilot_{day}.jsonl", encoding="utf-8"
         )
         file_handler.setFormatter(JsonFormatter())
         root.addHandler(file_handler)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("File logging disabled: %s", exc)
 
     # These libraries log every HTTP call at INFO, which drowns everything else.

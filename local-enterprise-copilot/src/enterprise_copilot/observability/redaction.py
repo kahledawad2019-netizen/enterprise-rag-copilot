@@ -40,11 +40,27 @@ EMAIL = re.compile(r"\b([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Z
 PHONE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
 
 # Keys whose value is always removed, whatever it contains.
-SENSITIVE_KEYS = frozenset({
-    "password", "passwd", "pwd", "secret", "api_key", "apikey", "token",
-    "connection_string", "odbc_connection_string", "credential", "credentials",
-    "authorization", "auth", "private_key", "ssn", "tax_id", "password_hash",
-})
+SENSITIVE_KEYS = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "token",
+        "connection_string",
+        "odbc_connection_string",
+        "credential",
+        "credentials",
+        "authorization",
+        "auth",
+        "private_key",
+        "ssn",
+        "tax_id",
+        "password_hash",
+    }
+)
 
 # Keys carrying personal data: masked rather than removed, so a trace still
 # shows that a contact was involved without exposing who.
@@ -89,9 +105,7 @@ def redact_value(key: str, value: Any, *, max_length: int = MAX_TEXT_LENGTH) -> 
         # Cap list length as well: a 5,000-row result set in a trace is a copy
         # of the data rather than a record of the request.
         capped = value[:50]
-        redacted = [
-            redact_value(key, item, max_length=max_length) for item in capped
-        ]
+        redacted = [redact_value(key, item, max_length=max_length) for item in capped]
         if len(value) > 50:
             redacted.append(f"... [{len(value) - 50} more items omitted]")
         return redacted
@@ -113,6 +127,11 @@ def safe_exception(exc: BaseException) -> str:
 
 
 __all__ = [
-    "MAX_TEXT_LENGTH", "PII_KEYS", "SENSITIVE_KEYS",
-    "redact_mapping", "redact_text", "redact_value", "safe_exception",
+    "MAX_TEXT_LENGTH",
+    "PII_KEYS",
+    "SENSITIVE_KEYS",
+    "redact_mapping",
+    "redact_text",
+    "redact_value",
+    "safe_exception",
 ]

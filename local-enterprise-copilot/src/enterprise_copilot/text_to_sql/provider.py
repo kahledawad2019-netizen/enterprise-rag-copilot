@@ -23,7 +23,6 @@ own SQL could approve its own SQL.
 from __future__ import annotations
 
 import logging
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -121,7 +120,8 @@ class TextToSQLProvider(ABC):
             remaining = validate_against_schema(repaired, generated.context, catalog)
             generated.sql = repaired
             generated.warnings.append(
-                "SQL was repaired automatically" if not remaining
+                "SQL was repaired automatically"
+                if not remaining
                 else "repair attempted but problems remain: " + "; ".join(remaining)
             )
         return generated
@@ -138,15 +138,22 @@ class TextToSQLProvider(ABC):
                 model=self.settings.chat_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": REPAIR_PROMPT.format(
-                        sql=sql, problems=chr(10).join(f"- {p}" for p in problems))},
+                    {
+                        "role": "user",
+                        "content": REPAIR_PROMPT.format(
+                            sql=sql, problems=chr(10).join(f"- {p}" for p in problems)
+                        ),
+                    },
                 ],
-                options={"temperature": 0.0, "num_predict": 600,
-                         "num_ctx": self.settings.profile.chat_context_tokens},
+                options={
+                    "temperature": 0.0,
+                    "num_predict": 600,
+                    "num_ctx": self.settings.profile.chat_context_tokens,
+                },
                 keep_alive=self.settings.ollama.keep_alive,
             )
             return extract_sql(response["message"]["content"])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("SQL repair attempt failed: %s", exc)
             return ""
 
@@ -216,7 +223,8 @@ def build_provider(
         except ImportError as exc:
             log.warning(
                 "Vanna is unavailable (%s); using the native provider. "
-                'Install it with: pip install -e ".[vanna]"', exc,
+                'Install it with: pip install -e ".[vanna]"',
+                exc,
             )
         from .native import NativeTextToSQLProvider
 
@@ -229,7 +237,8 @@ def build_provider(
     except ImportError as exc:
         log.warning(
             "Vanna is unavailable (%s); using the native provider. "
-            'Install it with: pip install -e ".[vanna]"', exc,
+            'Install it with: pip install -e ".[vanna]"',
+            exc,
         )
         from .native import NativeTextToSQLProvider
 
@@ -237,5 +246,8 @@ def build_provider(
 
 
 __all__ = [
-    "GeneratedSQL", "SQLRequest", "TextToSQLProvider", "build_provider",
+    "GeneratedSQL",
+    "SQLRequest",
+    "TextToSQLProvider",
+    "build_provider",
 ]

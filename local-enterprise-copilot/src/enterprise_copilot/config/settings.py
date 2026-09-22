@@ -14,7 +14,6 @@ whose output is never logged. Use `safe_odbc_connection_string()` for display.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -40,7 +39,9 @@ def resolve_path(value: object) -> object:
     empty* Qdrant store instead of opening the real one, and retrieval returns
     nothing with no error. Found when executing the notebook via nbconvert.
     """
-    if value is None or isinstance(value, Path) and value.is_absolute():
+    if value is None or (isinstance(value, Path) and value.is_absolute()):
+        return value
+    if not isinstance(value, (str, Path)):
         return value
     path = Path(value) if not isinstance(value, Path) else value
     return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
@@ -50,8 +51,11 @@ class DatabaseSettings(BaseSettings):
     """SQL Server connection and access policy."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="MSSQL_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="MSSQL_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     server: str = r".\SQLEXPRESS"
@@ -86,7 +90,7 @@ class DatabaseSettings(BaseSettings):
         return None if isinstance(v, str) and not v.strip() else v
 
     @model_validator(mode="after")
-    def _resolve_password(self) -> "DatabaseSettings":
+    def _resolve_password(self) -> DatabaseSettings:
         if self.auth_mode == "sql" and self.password is None and self.username:
             fetched = _password_from_keyring(self.username)
             if fetched:
@@ -134,8 +138,11 @@ class OllamaSettings(BaseSettings):
     """Local inference runtime. No cloud provider is ever contacted."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="OLLAMA_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="OLLAMA_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     host: str = "http://localhost:11434"
@@ -161,8 +168,11 @@ class LLMSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="LLM_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="LLM_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
         protected_namespaces=(),
     )
 
@@ -206,8 +216,11 @@ class EmbeddingSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="EMBEDDING_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="EMBEDDING_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
         protected_namespaces=(),
     )
 
@@ -262,8 +275,11 @@ class VannaCloudSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="VANNA_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="VANNA_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
         protected_namespaces=(),
     )
 
@@ -311,8 +327,11 @@ class VectorStoreSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="QDRANT_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="QDRANT_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     mode: Literal["embedded", "server"] = "embedded"
@@ -332,8 +351,11 @@ class RetrievalSettings(BaseSettings):
     """Chunking and retrieval knobs, all tuned against evals/ rather than guessed."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="RETRIEVAL_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="RETRIEVAL_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     chunk_target_tokens: int = 400
@@ -364,8 +386,11 @@ class ObservabilitySettings(BaseSettings):
     """Tracing and logging. The app must run fine when Phoenix is absent."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="OBS_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="OBS_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     enable_tracing: bool = True
@@ -383,15 +408,23 @@ class SecuritySettings(BaseSettings):
     """Guardrails applied to generated SQL and retrieved evidence."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, env_prefix="SECURITY_", extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        env_prefix="SECURITY_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     # Schemas the generated SQL may read. Everything else is refused.
     allowed_schemas: tuple[str, ...] = ("analytics", "core", "billing", "support")
     # Columns that must never appear in a result set, matched case-insensitively.
     blocked_columns: tuple[str, ...] = (
-        "password_hash", "api_key", "secret", "token", "ssn", "tax_id",
+        "password_hash",
+        "api_key",
+        "secret",
+        "token",
+        "ssn",
+        "tax_id",
     )
     require_sql_approval: bool = False
     enforce_tenant_isolation: bool = True
@@ -428,8 +461,10 @@ class Settings(BaseSettings):
     """Root settings object. Build it with `get_settings()`."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE, extra="ignore",
-        env_file_encoding="utf-8", case_sensitive=False,
+        env_file=ENV_FILE,
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     app_name: str = "Local Enterprise Intelligence Copilot"
@@ -449,7 +484,11 @@ class Settings(BaseSettings):
     manifests_dir: Path = PROJECT_ROOT / "data" / "manifests"
 
     _resolve = field_validator(
-        "project_root", "documents_dir", "generated_dir", "manifests_dir", mode="before",
+        "project_root",
+        "documents_dir",
+        "generated_dir",
+        "manifests_dir",
+        mode="before",
     )(resolve_path)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -489,8 +528,11 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         for path in (
-            self.documents_dir, self.generated_dir, self.manifests_dir,
-            self.observability.log_dir, self.observability.trace_dir,
+            self.documents_dir,
+            self.generated_dir,
+            self.manifests_dir,
+            self.observability.log_dir,
+            self.observability.trace_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         if self.vector_store.mode == "embedded":
@@ -537,8 +579,16 @@ def reset_settings_cache() -> None:
 
 
 __all__ = [
-    "Settings", "DatabaseSettings", "OllamaSettings", "VannaCloudSettings",
-    "VectorStoreSettings", "RetrievalSettings", "ObservabilitySettings",
+    "KEYRING_SERVICE",
+    "PROJECT_ROOT",
+    "DatabaseSettings",
+    "ObservabilitySettings",
+    "OllamaSettings",
+    "RetrievalSettings",
     "SecuritySettings",
-    "get_settings", "reset_settings_cache", "PROJECT_ROOT", "KEYRING_SERVICE",
+    "Settings",
+    "VannaCloudSettings",
+    "VectorStoreSettings",
+    "get_settings",
+    "reset_settings_cache",
 ]

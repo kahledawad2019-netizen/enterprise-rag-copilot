@@ -116,7 +116,7 @@ def lexical_overlap(question: str, passage: str) -> float:
     q, p = tokens(question), tokens(passage)
     if not q or not p:
         return 0.0
-    return len(q & p) / len(q)   # share of question words present in the passage
+    return len(q & p) / len(q)  # share of question words present in the passage
 
 
 def acceptable(question: str) -> tuple[bool, str]:
@@ -136,19 +136,23 @@ def acceptable(question: str) -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a held-out evaluation set")
     parser.add_argument("--per-doc", type=int, default=3, help="questions per document")
-    parser.add_argument("--chunks-per-doc", type=int, default=2, help="passages sampled per document")
+    parser.add_argument(
+        "--chunks-per-doc", type=int, default=2, help="passages sampled per document"
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=None, help="defaults to COPILOT_SEED")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--negatives", type=int, default=0,
+        "--negatives",
+        type=int,
+        default=0,
         help="append N unanswerable control questions, so abstention is measurable",
     )
     parser.add_argument(
         "--model",
         help="model that WRITES the questions. Using a different family from the "
-             "one being evaluated reduces self-preference bias, where a model "
-             "favours phrasing its own family retrieves well.",
+        "one being evaluated reduces self-preference bias, where a model "
+        "favours phrasing its own family retrieves well.",
     )
     args = parser.parse_args()
 
@@ -177,7 +181,14 @@ def main() -> int:
     print("  Held-out evaluation set generation")
     print(f"  documents : {len(paths)}")
     print(f"  generator : {generator_model}  (questions are NOT author-written)")
-    print(f"  evaluating: {settings.chat_model} pipeline" + ("   [INDEPENDENT GENERATOR]" if generator_model != settings.chat_model else "   [same family - self-preference possible]"))
+    print(
+        f"  evaluating: {settings.chat_model} pipeline"
+        + (
+            "   [INDEPENDENT GENERATOR]"
+            if generator_model != settings.chat_model
+            else "   [same family - self-preference possible]"
+        )
+    )
     print(f"  seed      : {seed}")
     print("=" * 84)
 
@@ -209,10 +220,14 @@ def main() -> int:
             try:
                 response = client.chat(
                     model=generator_model,
-                    messages=[{
-                        "role": "user",
-                        "content": GENERATION_PROMPT.format(count=args.per_doc, text=passage[:2500]),
-                    }],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": GENERATION_PROMPT.format(
+                                count=args.per_doc, text=passage[:2500]
+                            ),
+                        }
+                    ],
                     format="json",
                     options={"temperature": 0.7, "num_ctx": settings.profile.chat_context_tokens},
                 )
@@ -234,43 +249,55 @@ def main() -> int:
 
                 case_number += 1
                 overlap = lexical_overlap(question, passage)
-                cases.append({
-                    "id": f"HOLD-{case_number:03d}",
-                    "category": "generated",
-                    "query": question.strip(),
-                    "relevant_docs": [metadata.doc_id],
-                    "source_chunk_id": chunk.chunk_id,
-                    "source_section": chunk.section_path,
-                    "doc_type": str(metadata.doc_type),
-                    "lexical_overlap": round(overlap, 3),
-                    "overlap_band": ("high" if overlap >= 0.6
-                                     else "medium" if overlap >= 0.35 else "low"),
-                    "access_groups": ["public", "internal", "finance",
-                                      "support", "security", "exec"],
-                    "current_only": metadata.status == "current",
-                    "generated_by": generator_model,
-                    "seed": seed,
-                })
+                cases.append(
+                    {
+                        "id": f"HOLD-{case_number:03d}",
+                        "category": "generated",
+                        "query": question.strip(),
+                        "relevant_docs": [metadata.doc_id],
+                        "source_chunk_id": chunk.chunk_id,
+                        "source_section": chunk.section_path,
+                        "doc_type": str(metadata.doc_type),
+                        "lexical_overlap": round(overlap, 3),
+                        "overlap_band": (
+                            "high" if overlap >= 0.6 else "medium" if overlap >= 0.35 else "low"
+                        ),
+                        "access_groups": [
+                            "public",
+                            "internal",
+                            "finance",
+                            "support",
+                            "security",
+                            "exec",
+                        ],
+                        "current_only": metadata.status == "current",
+                        "generated_by": generator_model,
+                        "seed": seed,
+                    }
+                )
 
-        print(f"  {metadata.doc_id:<18} {len([c for c in cases if c['relevant_docs'] == [metadata.doc_id]]):>3} questions")
+        print(
+            f"  {metadata.doc_id:<18} {len([c for c in cases if c['relevant_docs'] == [metadata.doc_id]]):>3} questions"
+        )
 
     # Negative controls carry no relevant_docs, so a ranking metric skips them
     # and the abstention metric picks them up instead.
     for offset, question in enumerate(NEGATIVE_CONTROLS[: args.negatives], start=1):
-        cases.append({
-            "id": f"NEG-{offset:03d}",
-            "category": "unanswerable",
-            "query": question,
-            "relevant_docs": [],
-            "should_abstain": True,
-            "lexical_overlap": 0.0,
-            "overlap_band": "none",
-            "access_groups": ["public", "internal", "finance",
-                              "support", "security", "exec"],
-            "current_only": True,
-            "generated_by": "fixed negative control",
-            "seed": seed,
-        })
+        cases.append(
+            {
+                "id": f"NEG-{offset:03d}",
+                "category": "unanswerable",
+                "query": question,
+                "relevant_docs": [],
+                "should_abstain": True,
+                "lexical_overlap": 0.0,
+                "overlap_band": "none",
+                "access_groups": ["public", "internal", "finance", "support", "security", "exec"],
+                "current_only": True,
+                "generated_by": "fixed negative control",
+                "seed": seed,
+            }
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:

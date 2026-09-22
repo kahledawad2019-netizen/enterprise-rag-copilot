@@ -31,11 +31,36 @@ TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*")
 
 # A deliberately small stop list. Aggressive stop-word removal hurts: "not"
 # and "no" carry real meaning in a policy corpus ("no refund is issued").
-STOP_WORDS = frozenset({
-    "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "with",
-    "is", "are", "was", "were", "be", "been", "and", "or", "as", "that",
-    "this", "it", "its", "from", "which",
-})
+STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "and",
+        "or",
+        "as",
+        "that",
+        "this",
+        "it",
+        "its",
+        "from",
+        "which",
+    }
+)
 
 
 def tokenize(text: str) -> list[str]:
@@ -91,10 +116,7 @@ class BM25Index:
         # Title and section path are included so a query naming the section
         # ("refund policy annual plans") matches even when the body does not
         # repeat those words.
-        corpus = [
-            tokenize(f"{c.title} {c.section_path} {c.text}")
-            for c in chunks
-        ]
+        corpus = [tokenize(f"{c.title} {c.section_path} {c.text}") for c in chunks]
         self._bm25 = BM25Okapi(corpus)
         self._corpus_tokens = [set(tokens) for tokens in corpus]
         log.info("BM25 index built over %d chunks", len(chunks))
@@ -129,7 +151,10 @@ class BM25Index:
         if not tokens:
             return []
 
-        scores = self._bm25.get_scores(tokens)
+        bm25 = self._bm25
+        if bm25 is None:  # defensive: `is_ready` may change if construction is refactored
+            return []
+        scores = bm25.get_scores(tokens)
         query_tokens = set(tokens)
 
         # A document qualifies if it shares at least one query token. Ranking
@@ -148,8 +173,11 @@ class BM25Index:
 
         return [
             ScoredChunk(
-                chunk=self._chunks[index], score=score,
-                method=RetrievalMethod.SPARSE, sparse_score=score, sparse_rank=rank,
+                chunk=self._chunks[index],
+                score=score,
+                method=RetrievalMethod.SPARSE,
+                sparse_score=score,
+                sparse_rank=rank,
             )
             for rank, (index, score) in enumerate(candidates[:limit], start=1)
         ]
@@ -159,7 +187,8 @@ class BM25Index:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as handle:
             pickle.dump(
-                {"chunks": [c.model_dump() for c in self._chunks]}, handle,
+                {"chunks": [c.model_dump() for c in self._chunks]},
+                handle,
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
         log.info("BM25 corpus saved to %s (%d chunks)", path, len(self._chunks))
@@ -183,4 +212,4 @@ class BM25Index:
             return False
 
 
-__all__ = ["BM25Index", "SparseHit", "STOP_WORDS", "tokenize"]
+__all__ = ["STOP_WORDS", "BM25Index", "SparseHit", "tokenize"]

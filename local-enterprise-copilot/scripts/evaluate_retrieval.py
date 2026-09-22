@@ -21,7 +21,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -35,7 +35,9 @@ BASELINE_FILE = ROOT / "evals" / "baseline_retrieval.json"
 def load_cases(path: Path, category: str | None) -> list[dict]:
     if not path.exists():
         raise FileNotFoundError(f"Evaluation set not found: {path}")
-    cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    cases = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     if category:
         cases = [c for c in cases if c.get("category") == category]
     return cases
@@ -50,11 +52,14 @@ def main() -> int:
     parser.add_argument("--compare-baseline", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
-        "--eval-file", type=Path, default=EVAL_FILE,
+        "--eval-file",
+        type=Path,
+        default=EVAL_FILE,
         help="evaluation set to run; use evals/document_rag_holdout.jsonl for the held-out set",
     )
     parser.add_argument(
-        "--holdout", action="store_true",
+        "--holdout",
+        action="store_true",
         help="shorthand for --eval-file evals/document_rag_holdout.jsonl",
     )
     args = parser.parse_args()
@@ -83,13 +88,19 @@ def main() -> int:
     is_holdout = "holdout" in args.eval_file.name
     print("=" * 92)
     print("  Retrieval evaluation")
-    print(f"  set        : {args.eval_file.name}"
-          + ("   [HELD OUT - not tuned against]" if is_holdout
-             else "   [DEV SET - used during development]"))
+    print(
+        f"  set        : {args.eval_file.name}"
+        + (
+            "   [HELD OUT - not tuned against]"
+            if is_holdout
+            else "   [DEV SET - used during development]"
+        )
+    )
     print(f"  cases      : {len(cases)}   k={args.k}")
     print(f"  embedding  : {settings.embedding_model}")
-    print(f"  index      : {settings.vector_store.collection} "
-          f"({settings.vector_store.index_version})")
+    print(
+        f"  index      : {settings.vector_store.collection} ({settings.vector_store.index_version})"
+    )
     print("=" * 92)
 
     retriever = HybridRetriever(settings)
@@ -120,15 +131,21 @@ def main() -> int:
 
                 started = time.perf_counter()
                 results, _ = retriever.retrieve(
-                    case["query"], strategy=strategy, user=user,
-                    limit=args.k, filters=filters, expand_parents=False,
+                    case["query"],
+                    strategy=strategy,
+                    user=user,
+                    limit=args.k,
+                    filters=filters,
+                    expand_parents=False,
                 )
                 latency_ms = (time.perf_counter() - started) * 1000
 
                 evaluation = evaluate_query(
-                    query_id=case["id"], query=case["query"],
+                    query_id=case["id"],
+                    query=case["query"],
                     relevant_docs=case.get("relevant_docs", []),
-                    results=results, k=args.k,
+                    results=results,
+                    k=args.k,
                     category=case.get("category", ""),
                     forbidden_docs=case.get("must_not_retrieve", []),
                     latency_ms=latency_ms,
@@ -147,13 +164,18 @@ def main() -> int:
                     print(f"    {strategy:<9} {evaluation.summary()}")
 
             metrics = aggregate(
-                evaluations, strategy=strategy, k=args.k,
-                abstention_correct=abstain_ok, abstention_total=abstain_total,
+                evaluations,
+                strategy=strategy,
+                k=args.k,
+                abstention_correct=abstain_ok,
+                abstention_total=abstain_total,
             )
             all_metrics[strategy] = metrics
             per_strategy_evals[strategy] = evaluations
-            print(f"  {strategy:<10} done: {metrics.queries} queries, "
-                  f"NDCG@{args.k}={metrics.ndcg_at_k:.3f}")
+            print(
+                f"  {strategy:<10} done: {metrics.queries} queries, "
+                f"NDCG@{args.k}={metrics.ndcg_at_k:.3f}"
+            )
     finally:
         retriever.close()
 
@@ -175,8 +197,7 @@ def main() -> int:
     # Held-out cases record how much of the question's vocabulary appears in
     # the source passage. Splitting by that band separates genuine retrieval
     # skill from lexical leakage, which flatters BM25 in particular.
-    bands = [b for b in ("low", "medium", "high")
-             if any(c.get("overlap_band") == b for c in cases)]
+    bands = [b for b in ("low", "medium", "high") if any(c.get("overlap_band") == b for c in cases)]
     if bands:
         print("\nNDCG by lexical overlap between question and source passage")
         print("  low = least leakage (hardest)   high = most leakage (flatters BM25)")
@@ -186,8 +207,9 @@ def main() -> int:
             ids = {c["id"] for c in cases if c.get("overlap_band") == band}
             row = f"{band:<12}{len(ids):>5}"
             for strategy in strategies:
-                subset = [e for e in per_strategy_evals[strategy]
-                          if e.query_id in ids and e.relevant_docs]
+                subset = [
+                    e for e in per_strategy_evals[strategy] if e.query_id in ids and e.relevant_docs
+                ]
                 value = sum(e.ndcg_at_k for e in subset) / len(subset) if subset else 0.0
                 row += f"{value:>12.3f}"
             print(row)
@@ -196,8 +218,10 @@ def main() -> int:
     for strategy in strategies:
         metrics = all_metrics[strategy]
         leaks = [e for e in per_strategy_evals[strategy] if not e.filter_correct]
-        print(f"  {strategy:<10} {metrics.filter_accuracy:.3f}"
-              + (f"  LEAKED: {[e.query_id for e in leaks]}" if leaks else "  (no leaks)"))
+        print(
+            f"  {strategy:<10} {metrics.filter_accuracy:.3f}"
+            + (f"  LEAKED: {[e.query_id for e in leaks]}" if leaks else "  (no leaks)")
+        )
 
     print("\nAbstention (no evidence found for unanswerable questions):")
     for strategy in strategies:
@@ -206,7 +230,7 @@ def main() -> int:
             print(f"  {strategy:<10} {metrics.abstention_correct}/{metrics.abstention_total}")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     payload = {
         "generated_at_utc": stamp,
         "k": args.k,
@@ -242,8 +266,7 @@ def _compare_to_baseline(payload: dict, all_metrics: dict) -> int:
     baseline = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
     print("\n" + "=" * 92)
     print("  Regression against baseline")
-    print(f"  baseline generated {baseline['generated_at_utc']} "
-          f"with {baseline['embedding_model']}")
+    print(f"  baseline generated {baseline['generated_at_utc']} with {baseline['embedding_model']}")
     print("=" * 92)
 
     regressed = False
@@ -256,8 +279,10 @@ def _compare_to_baseline(payload: dict, all_metrics: dict) -> int:
         marker = "REGRESSION" if delta < -0.02 else ("improved" if delta > 0.02 else "stable")
         if delta < -0.02:
             regressed = True
-        print(f"  {strategy:<10} NDCG {before['ndcg@k']:.3f} -> "
-              f"{metrics.ndcg_at_k:.3f}  ({delta:+.3f})  {marker}")
+        print(
+            f"  {strategy:<10} NDCG {before['ndcg@k']:.3f} -> "
+            f"{metrics.ndcg_at_k:.3f}  ({delta:+.3f})  {marker}"
+        )
 
     if regressed:
         print("\nAt least one strategy regressed by more than 0.02 NDCG.")

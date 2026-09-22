@@ -19,19 +19,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 USERS = {
-    "admin":      ("all",    1, ["public", "internal", "finance", "support", "security", "exec"]),
+    "admin": ("all", 1, ["public", "internal", "finance", "support", "security", "exec"]),
     "analyst_na": ("NWC-NA", 1, ["public", "internal", "finance"]),
     "analyst_eu": ("NWC-EU", 2, ["public", "internal", "finance"]),
     "support_na": ("NWC-NA", 1, ["public", "internal", "support"]),
-    "guest":      ("all",    1, ["public"]),
+    "guest": ("all", 1, ["public"]),
 }
 
 
 def wrap(text: str, indent: str = "  ") -> str:
     out = []
     for line in text.split("\n"):
-        out.append(textwrap.fill(line, width=86, initial_indent=indent,
-                                 subsequent_indent=indent) if line.strip() else "")
+        out.append(
+            textwrap.fill(line, width=86, initial_indent=indent, subsequent_indent=indent)
+            if line.strip()
+            else ""
+        )
     return "\n".join(out)
 
 
@@ -39,8 +42,10 @@ def render(answer, trace, *, show_trace: bool) -> None:
     from enterprise_copilot.generation.citations import format_sources
 
     route = trace.routing
-    print(f"\n  route     : {route.route.value}  (decided by {route.decided_by}, "
-          f"confidence {route.confidence:.2f})")
+    print(
+        f"\n  route     : {route.route.value}  (decided by {route.decided_by}, "
+        f"confidence {route.confidence:.2f})"
+    )
     print(f"  reason    : {route.reason}")
     if route.identifiers:
         print(f"  preserved : {', '.join(route.identifiers)}")
@@ -51,8 +56,10 @@ def render(answer, trace, *, show_trace: bool) -> None:
         print("\n  --- AI-GENERATED SQL (not written by a human) ---")
         for line in trace.generated_sql.split("\n"):
             print(f"    {line}")
-        print(f"  guard: {trace.sql_validation}"
-              + (f" - {trace.sql_blocked_reason}" if trace.sql_blocked_reason else ""))
+        print(
+            f"  guard: {trace.sql_validation}"
+            + (f" - {trace.sql_blocked_reason}" if trace.sql_blocked_reason else "")
+        )
         if trace.sql_row_count is not None:
             print(f"  rows : {trace.sql_row_count}")
 
@@ -66,8 +73,10 @@ def render(answer, trace, *, show_trace: bool) -> None:
     print("-" * 90)
     print(f"  status    : {answer.status.value}")
     print(f"  grounded  : {answer.is_grounded}")
-    print(f"  citations : {len(answer.citations)} "
-          f"({sum(1 for c in answer.citations if c.is_valid)} valid)")
+    print(
+        f"  citations : {len(answer.citations)} "
+        f"({sum(1 for c in answer.citations if c.is_valid)} valid)"
+    )
     print(f"  latency   : {trace.total_ms:.0f} ms total")
     if answer.warnings:
         for warning in answer.warnings:
@@ -87,8 +96,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Local Enterprise Intelligence Copilot")
     parser.add_argument("question", nargs="*")
     parser.add_argument("--user", default="admin", choices=sorted(USERS))
-    parser.add_argument("--strategy", default="reranked",
-                        choices=["dense", "sparse", "hybrid", "reranked"])
+    parser.add_argument(
+        "--strategy", default="reranked", choices=["dense", "sparse", "hybrid", "reranked"]
+    )
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--trace", action="store_true", help="show stage timings")
     parser.add_argument("--verbose", action="store_true")
@@ -106,8 +116,10 @@ def main() -> int:
     settings = get_settings()
     tenant_code, tenant_id, groups = USERS[args.user]
     user = UserContext(
-        user_name=args.user, tenant=tenant_code,
-        access_groups=groups, is_admin=args.user == "admin",
+        user_name=args.user,
+        tenant=tenant_code,
+        access_groups=groups,
+        is_admin=args.user == "admin",
     )
 
     copilot = Copilot(settings)

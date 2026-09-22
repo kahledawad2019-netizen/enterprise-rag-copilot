@@ -63,11 +63,13 @@ class TestOptionTranslation:
 class TestResponseShape:
     def test_openai_envelope_becomes_the_shape_call_sites_read(self):
         """Six call sites read response["message"]["content"] directly."""
-        mapped = _to_ollama_shape({
-            "model": "llama-3.3-70b-versatile",
-            "choices": [{"message": {"role": "assistant", "content": "SELECT 1"}}],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 8},
-        })
+        mapped = _to_ollama_shape(
+            {
+                "model": "llama-3.3-70b-versatile",
+                "choices": [{"message": {"role": "assistant", "content": "SELECT 1"}}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 8},
+            }
+        )
         assert mapped["message"]["content"] == "SELECT 1"
         assert mapped["prompt_eval_count"] == 120
         assert mapped["eval_count"] == 8
@@ -84,9 +86,7 @@ class TestResponseShape:
 class TestCloudflareVectorExtraction:
     def test_data_shape(self):
         body = {"result": {"shape": [2, 3], "data": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}}
-        assert _extract_cf_vectors(body, "@cf/baai/bge-m3") == [
-            [0.1, 0.2, 0.3], [0.4, 0.5, 0.6]
-        ]
+        assert _extract_cf_vectors(body, "@cf/baai/bge-m3") == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
 
     def test_response_list_of_lists_shape(self):
         body = {"result": {"response": [[0.1, 0.2]]}}

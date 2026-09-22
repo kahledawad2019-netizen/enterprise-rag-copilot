@@ -53,11 +53,13 @@ def fingerprint(generator: SyntheticGenerator) -> str:
     payload = []
     for name in ("customers", "subscriptions", "invoices", "tickets", "sla_breaches"):
         for row in getattr(generator.data, name):
-            payload.append({
-                k: (v.isoformat() if hasattr(v, "isoformat") else v)
-                for k, v in sorted(row.items())
-                if not k.startswith("_")
-            })
+            payload.append(
+                {
+                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                    for k, v in sorted(row.items())
+                    if not k.startswith("_")
+                }
+            )
     encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -94,7 +96,8 @@ class TestReferentialIntegrity:
         generator = build(settings, reference_data)
         by_index = {c["_index"]: c for c in generator.data.customers}
         mismatches = [
-            s for s in generator.data.subscriptions
+            s
+            for s in generator.data.subscriptions
             if s["tenant_id"] != by_index[s["_customer_index"]]["tenant_id"]
         ]
         assert not mismatches, f"{len(mismatches)} subscriptions leaked across tenants"
@@ -170,8 +173,11 @@ class TestEdgeCases:
         generator = build(settings, reference_data)
         never = [t for t in generator.data.tickets if t["first_response_at_utc"] is None]
         if never:
-            breached = {b["_ticket_index"] for b in generator.data.sla_breaches
-                        if b["breach_type"] == "first_response"}
+            breached = {
+                b["_ticket_index"]
+                for b in generator.data.sla_breaches
+                if b["breach_type"] == "first_response"
+            }
             assert any(t["_index"] in breached for t in never)
 
     def test_multi_currency_present(self, settings: Settings, reference_data: dict) -> None:
@@ -199,7 +205,9 @@ class TestIncidents:
         codes = {i["incident_code"] for i in generator.data.incidents}
         assert "INC-2025-0042" in codes
 
-        incident = next(i for i in generator.data.incidents if i["incident_code"] == "INC-2025-0042")
+        incident = next(
+            i for i in generator.data.incidents if i["incident_code"] == "INC-2025-0042"
+        )
         assert incident["severity"] == "SEV1"
         assert incident["started_at_utc"].date() == date(2025, 6, 14)
         assert incident["postmortem_doc_id"] == "DOC-PM-2025-0042"

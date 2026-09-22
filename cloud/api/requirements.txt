@@ -31,6 +31,7 @@ uvicorn[standard]>=0.32,<1
 pydantic>=2.9,<3
 pydantic-settings>=2.6,<3
 python-dotenv>=1.0
+requests>=2.32,<3
 
 # --- database ---
 # SQL Server via ODBC. pyodbc is a thin wrapper over the driver, so the image
@@ -56,8 +57,11 @@ PyYAML>=6.0
 pandas>=2.2
 numpy>=1.26
 
-# --- text-to-sql ---
-vanna==2.0.2
+# Vanna is intentionally excluded from the production image. The available
+# cloud client is the archived legacy API and its current premium backend is
+# documented as development/demo software. Keep the adapter experimental;
+# production staging uses the native provider until a vendor smoke test,
+# privacy review and dependency review pass.
 
 # --- observability ---
 structlog>=24.4

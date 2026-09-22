@@ -23,16 +23,19 @@ the internal object.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import secrets
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -147,7 +150,7 @@ class SqlDetail(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    persona: str = "admin"
+    persona: str = "guest"
     strategy: Literal["dense", "sparse", "hybrid", "reranked"] = "reranked"
 
 
@@ -215,6 +218,7 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 _copilot: Copilot | None = None
+_copilot_lock = threading.RLock()
 
 
 @asynccontextmanager
@@ -257,8 +261,47 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 
-def require_token(authorization: str = Header(default="")) -> None:
-    """Reject anything that does not carry the Worker's shared secret.
+@dataclass(frozen=True)
+class AuthenticatedCaller:
+    """Identity asserted by the Worker and its server-side permission mapping."""
+
+    email: str
+    persona_key: str | None
+    demo_mode: bool
+
+
+def _identity_map() -> dict[str, str]:
+    """Email -> persona mapping supplied to the backend, never by the browser."""
+    raw = os.environ.get("COPILOT_IDENTITY_MAP_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="COPILOT_IDENTITY_MAP_JSON is not valid JSON.",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="COPILOT_IDENTITY_MAP_JSON must be a JSON object.",
+        )
+    mapping = {str(email).strip().lower(): str(persona) for email, persona in payload.items()}
+    unknown = sorted({persona for persona in mapping.values() if persona not in PERSONAS})
+    if unknown:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Identity map contains unknown persona(s): {', '.join(unknown)}.",
+        )
+    return mapping
+
+
+def require_caller(
+    authorization: str = Header(default=""),
+    asserted_email: str = Header(default="", alias="X-Copilot-User"),
+) -> AuthenticatedCaller:
+    """Authenticate the Worker and bind its identity to server-side permissions.
 
     The container has a public URL, so this is the only thing standing between
     the copilot and the internet. Compared with `compare_digest` so a wrong
@@ -274,6 +317,31 @@ def require_token(authorization: str = Header(default="")) -> None:
     scheme, _, presented = authorization.partition(" ")
     if scheme.lower() != "bearer" or not hmac.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token.")
+
+    if get_settings().demo_mode:
+        return AuthenticatedCaller(
+            email=asserted_email.strip().lower() or "local-demo",
+            persona_key=None,
+            demo_mode=True,
+        )
+
+    email = asserted_email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="The gateway did not assert a user identity.")
+
+    persona_key = _identity_map().get(email)
+    if persona_key is None:
+        raise HTTPException(status_code=403, detail="This identity has no copilot role mapping.")
+    return AuthenticatedCaller(email=email, persona_key=persona_key, demo_mode=False)
+
+
+def _resolve_persona(caller: AuthenticatedCaller, requested: str | None) -> tuple[str, dict[str, Any]]:
+    """Only demo mode may choose a persona; production identity owns exactly one."""
+    key = (requested or "guest") if caller.demo_mode else caller.persona_key
+    persona = PERSONAS.get(key or "")
+    if persona is None:
+        raise HTTPException(status_code=400, detail=f"Unknown persona {key!r}.")
+    return str(key), persona
 
 
 def _chunk_count() -> int:
@@ -310,7 +378,7 @@ def get_copilot() -> Copilot:
 
 
 @app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+def health(response: Response) -> HealthResponse:
     """Probe every dependency. Deliberately unauthenticated so the platform's
     own health check can reach it; it reveals status, never configuration."""
     checks: list[HealthCheck] = []
@@ -334,7 +402,8 @@ def health() -> HealthResponse:
             HealthCheck(name="vector_store", ok=count > 0, detail=f"{count} chunks indexed")
         )
     except Exception as exc:
-        checks.append(HealthCheck(name="vector_store", ok=False, detail=_short(exc)))
+        log.warning("vector-store health check failed: %s", _short(exc))
+        checks.append(HealthCheck(name="vector_store", ok=False, detail="unavailable"))
 
     # Database
     try:
@@ -344,16 +413,16 @@ def health() -> HealthResponse:
             conn.cursor().execute("SELECT 1")
         checks.append(HealthCheck(name="database", ok=True, detail="reachable"))
     except Exception as exc:
-        checks.append(HealthCheck(name="database", ok=False, detail=_short(exc)))
+        log.warning("database health check failed: %s", _short(exc))
+        checks.append(HealthCheck(name="database", ok=False, detail="unavailable"))
 
     # Chat model. Which provider is in play decides what "reachable" means,
     # so probe accordingly rather than always asking Ollama - a container
     # configured for Groq has no Ollama, and reporting that as a failure would
     # mark a perfectly healthy deployment degraded.
     try:
-        from enterprise_copilot.llm import build_chat_client, describe_providers
+        from enterprise_copilot.llm import build_chat_client
 
-        providers = describe_providers(settings)
         if settings.llm.provider == "ollama":
             client = build_chat_client(settings)
             models = [m.get("model", "") for m in client.list().get("models", [])]
@@ -364,11 +433,12 @@ def health() -> HealthResponse:
             # token. A real generation on every health check would be billed
             # once per probe, forever.
             build_chat_client(settings)
-            detail = f"{providers['chat_provider']} configured, model {providers['chat_model']}"
+            detail = "configured"
             ok = True
         checks.append(HealthCheck(name="chat_model", ok=ok, detail=detail))
     except Exception as exc:
-        checks.append(HealthCheck(name="chat_model", ok=False, detail=_short(exc)))
+        log.warning("chat-model health check failed: %s", _short(exc))
+        checks.append(HealthCheck(name="chat_model", ok=False, detail="unavailable"))
 
     # Whether anything leaves the machine. Not a failure - a disclosure, so an
     # operator can see the posture without reading the container's env.
@@ -388,7 +458,8 @@ def health() -> HealthResponse:
             )
         )
     except Exception as exc:
-        checks.append(HealthCheck(name="data_locality", ok=False, detail=_short(exc)))
+        log.warning("data-locality health check failed: %s", _short(exc))
+        checks.append(HealthCheck(name="data_locality", ok=False, detail="unavailable"))
 
     if all(c.ok for c in checks):
         status: Literal["ok", "degraded", "down"] = "ok"
@@ -397,11 +468,16 @@ def health() -> HealthResponse:
     else:
         status = "degraded"
 
+    # This endpoint is readiness, not merely proof that Python is alive. The
+    # container must not receive traffic with an empty index or dead database.
+    if status != "ok":
+        response.status_code = 503
+
     return HealthResponse(status=status, checks=checks)
 
 
-@app.get("/meta", response_model=MetaResponse, dependencies=[Depends(require_token)])
-def meta() -> MetaResponse:
+@app.get("/meta", response_model=MetaResponse)
+def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
     settings = get_settings()
 
     document_count = 0
@@ -412,6 +488,9 @@ def meta() -> MetaResponse:
     except Exception as exc:  # a missing index must not break the whole UI
         log.warning("Could not read corpus counts: %s", exc)
 
+    visible_personas = PERSONAS if caller.demo_mode else {
+        caller.persona_key: PERSONAS[caller.persona_key]  # type: ignore[index]
+    }
     return MetaResponse(
         app_name=settings.app_name,
         personas=[
@@ -423,7 +502,7 @@ def meta() -> MetaResponse:
                 access_groups=p["access_groups"],
                 description=p["description"],
             )
-            for key, p in PERSONAS.items()
+            for key, p in visible_personas.items()
         ],
         strategies=["dense", "sparse", "hybrid", "reranked"],
         default_strategy="reranked",
@@ -436,15 +515,14 @@ def meta() -> MetaResponse:
     )
 
 
-@app.post("/ask", response_model=AskResponse, dependencies=[Depends(require_token)])
+@app.post("/ask", response_model=AskResponse)
 def ask(
     body: AskRequest,
     request: Request,
+    caller: AuthenticatedCaller = Depends(require_caller),
     copilot: Copilot = Depends(get_copilot),
 ) -> AskResponse:
-    persona = PERSONAS.get(body.persona)
-    if persona is None:
-        raise HTTPException(status_code=400, detail=f"Unknown persona {body.persona!r}.")
+    persona_key, persona = _resolve_persona(caller, body.persona)
 
     user = UserContext(
         user_name=persona["label"],
@@ -455,21 +533,27 @@ def ask(
 
     # The identity Cloudflare Access verified, if there was one. Recorded on
     # the trace so an audit can tie a query to a person, not just a persona.
-    caller = request.headers.get("X-Copilot-User", "")
-    if caller:
-        log.info("request from %s acting as %s", caller, body.persona)
+    request_id = request.headers.get("X-Request-Id", "")
+    log.info("request %s from %s as %s", request_id, caller.email, persona_key)
 
     started = time.perf_counter()
     try:
-        answer, trace = copilot.ask(
-            body.question,
-            user=user,
-            tenant_id=persona["tenant_id"],
-            strategy=body.strategy,
-        )
+        # The current tracer and lazy SQL provider are process-global mutable
+        # state. Serialize requests until those internals become request-scoped;
+        # otherwise concurrent users can mix spans and provider state.
+        with _copilot_lock:
+            answer, trace = copilot.ask(
+                body.question,
+                user=user,
+                tenant_id=persona["tenant_id"],
+                strategy=body.strategy,
+            )
     except Exception as exc:
-        log.exception("ask failed")
-        raise HTTPException(status_code=500, detail=_short(exc)) from exc
+        log.exception("ask failed (request %s)", request_id)
+        detail = "The request failed. Check the protected backend logs"
+        if request_id:
+            detail += f" using request id {request_id}"
+        raise HTTPException(status_code=500, detail=detail + ".") from exc
 
     elapsed = (time.perf_counter() - started) * 1000
     return _to_response(answer, trace, elapsed)
@@ -477,7 +561,7 @@ def ask(
 
 class RetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
-    persona: str = "admin"
+    persona: str = "guest"
     limit: int = Field(default=8, ge=1, le=20)
     strategies: list[str] = Field(default_factory=lambda: ["dense", "sparse", "hybrid", "reranked"])
 
@@ -509,8 +593,12 @@ class RetrieveResponse(BaseModel):
     runs: list[StrategyRun]
 
 
-@app.post("/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_token)])
-def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> RetrieveResponse:
+@app.post("/retrieve", response_model=RetrieveResponse)
+def retrieve(
+    body: RetrieveRequest,
+    caller: AuthenticatedCaller = Depends(require_caller),
+    copilot: Copilot = Depends(get_copilot),
+) -> RetrieveResponse:
     """Run the same query through several strategies so they can be compared.
 
     This is the project's most informative screen: it is where "hybrid beats
@@ -518,9 +606,7 @@ def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> 
     Try `INC-2025-0042` - dense returns the wrong incident, sparse gets it
     right at rank 1, and hybrid keeps the sparse answer.
     """
-    persona = PERSONAS.get(body.persona)
-    if persona is None:
-        raise HTTPException(status_code=400, detail=f"Unknown persona {body.persona!r}.")
+    _, persona = _resolve_persona(caller, body.persona)
 
     user = UserContext(
         user_name=persona["label"],
@@ -533,9 +619,10 @@ def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> 
     for strategy in body.strategies:
         started = time.perf_counter()
         try:
-            results, _ = copilot.retriever.retrieve(
-                body.query, strategy=strategy, user=user, limit=body.limit
-            )
+            with _copilot_lock:
+                results, _ = copilot.retriever.retrieve(
+                    body.query, strategy=strategy, user=user, limit=body.limit
+                )
         except Exception as exc:
             # One failing strategy must not lose the others: a comparison with
             # three of four columns is still a useful comparison.
@@ -545,7 +632,7 @@ def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> 
                     strategy=strategy,
                     elapsed_ms=(time.perf_counter() - started) * 1000,
                     results=[],
-                    error=_short(exc),
+                    error=f"{type(exc).__name__}: retrieval unavailable",
                 )
             )
             continue
@@ -595,8 +682,11 @@ class DocumentOut(BaseModel):
     readable: bool = True
 
 
-@app.get("/documents", dependencies=[Depends(require_token)])
-def documents(persona: str = "admin") -> dict[str, Any]:
+@app.get("/documents")
+def documents(
+    persona: str = "guest",
+    caller: AuthenticatedCaller = Depends(require_caller),
+) -> dict[str, Any]:
     """The corpus, filtered by what this persona is allowed to see.
 
     Filtering happens here rather than in the browser. Sending the full list
@@ -607,9 +697,7 @@ def documents(persona: str = "admin") -> dict[str, Any]:
     `access_group` and `tenant` are not returned. They decide the filter; they
     are not the browser's business.
     """
-    p = PERSONAS.get(persona)
-    if p is None:
-        raise HTTPException(status_code=400, detail=f"Unknown persona {persona!r}.")
+    persona_key, p = _resolve_persona(caller, persona)
 
     allowed_groups = {g.lower() for g in p["access_groups"]}
     tenant = str(p["tenant"]).lower()
@@ -659,7 +747,7 @@ def documents(persona: str = "admin") -> dict[str, Any]:
         "documents": [d.model_dump() for d in out],
         "total": len(out),
         "hidden_by_permissions": hidden,
-        "persona": persona,
+        "persona": persona_key,
     }
 
 
@@ -695,16 +783,14 @@ def _as_list(value: Any) -> list[str]:
     return []
 
 
-@app.get("/evaluation", dependencies=[Depends(require_token)])
-def evaluation() -> dict[str, Any]:
-    """The measured numbers, read from the committed evaluation runs.
+@app.get("/evaluation")
+def evaluation(_: AuthenticatedCaller = Depends(require_caller)) -> dict[str, Any]:
+    """Return a versioned evaluation baseline with explicit freshness status.
 
     Served from disk rather than recomputed: a full evaluation takes minutes
     of model time, and a dashboard that silently re-runs it on every page load
     is a dashboard nobody opens twice.
     """
-    import json
-
     results_dir = PROJECT_ROOT / "evals" / "results"
     runs: list[dict[str, Any]] = []
     if results_dir.exists():
@@ -716,44 +802,55 @@ def evaluation() -> dict[str, Any]:
                 continue
             runs.append({"file": path.name, "kind": path.name.split("_")[0], "payload": payload})
 
-    return {"runs": runs, "report": _HELD_OUT_SUMMARY}
+    baseline_path = (
+        PROJECT_ROOT / "evals" / "baselines" / "document_rag_holdout_qwen3_v1.json"
+    )
+    if not baseline_path.exists():
+        raise HTTPException(status_code=503, detail="The evaluation baseline is unavailable.")
+
+    report = json.loads(baseline_path.read_text(encoding="utf-8"))
+    settings = get_settings()
+    live_provider = settings.embeddings.provider
+    live_model = settings.embedding_model
+    live_index_version = settings.vector_store.index_version
+    stale_reasons: list[str] = []
+    if report["evaluated_embedding_provider"] != live_provider:
+        stale_reasons.append(
+            "embedding provider changed from "
+            f"{report['evaluated_embedding_provider']} to {live_provider}"
+        )
+    if report["evaluated_embedding_model"] != live_model:
+        stale_reasons.append(
+            "embedding model changed from "
+            f"{report['evaluated_embedding_model']} to {live_model}"
+        )
+    if report["evaluated_index_version"] != live_index_version:
+        stale_reasons.append(
+            "index version changed from "
+            f"{report['evaluated_index_version']} to {live_index_version}"
+        )
+
+    report.update(
+        {
+            "current": not stale_reasons,
+            "stale_reasons": stale_reasons,
+            "live_embedding_provider": live_provider,
+            "live_embedding_model": live_model,
+            "live_index_version": live_index_version,
+        }
+    )
+    return {"runs": runs, "report": report}
 
 
-# The headline figures from docs/evaluation_report.md. Held here so the
-# dashboard can render them without parsing prose, and kept in one place so
-# there is a single thing to update when the evaluation is re-run.
-_HELD_OUT_SUMMARY: dict[str, Any] = {
-    "cases": 96,
-    "k": 8,
-    "bootstrap_resamples": 10000,
-    "strategies": [
-        {"name": "dense", "ndcg": 0.856, "ci": [0.809, 0.900], "mrr": 0.811, "recall": 0.990, "median_ms": 49},
-        {"name": "sparse", "ndcg": 0.877, "ci": [0.833, 0.918], "mrr": 0.839, "recall": 0.990, "median_ms": 4},
-        {"name": "hybrid", "ndcg": 0.925, "ci": [0.882, 0.961], "mrr": 0.906, "recall": 0.979, "median_ms": 54},
-        {"name": "reranked", "ndcg": 0.946, "ci": [0.914, 0.974], "mrr": 0.928, "recall": 1.000, "median_ms": 1454},
-    ],
-    "comparisons": [
-        {"pair": "hybrid vs dense", "delta": 0.069, "ci": [0.029, 0.110], "p": 0.0002, "significant": True},
-        {"pair": "reranked vs dense", "delta": 0.091, "ci": [0.055, 0.131], "p": 0.00005, "significant": True},
-        {"pair": "hybrid vs sparse", "delta": 0.047, "ci": [0.010, 0.085], "p": 0.014, "significant": True},
-        {"pair": "reranked vs sparse", "delta": 0.070, "ci": [0.033, 0.109], "p": 0.0002, "significant": True},
-        {"pair": "sparse vs dense", "delta": 0.021, "ci": [-0.033, 0.078], "p": 0.448, "significant": False},
-        {"pair": "reranked vs hybrid", "delta": 0.023, "ci": [-0.013, 0.059], "p": 0.217, "significant": False},
-    ],
-    "headline": (
-        "Hybrid retrieval is a real improvement over dense: +0.069 NDCG, the interval "
-        "excludes zero, and it survives Holm-Bonferroni correction. Reranking is NOT "
-        "statistically distinguishable from hybrid - the interval [-0.013, +0.059] "
-        "contains zero - and costs 36x the latency. That second result contradicts "
-        "what was claimed during development."
-    ),
-}
-
-
-@app.get("/traces", dependencies=[Depends(require_token)])
-def traces(limit: int = 50) -> dict[str, Any]:
+@app.get("/traces")
+def traces(
+    limit: int = 50,
+    caller: AuthenticatedCaller = Depends(require_caller),
+) -> dict[str, Any]:
     """The most recent traces, newest first. Attributes are already redacted."""
-    import json
+    _, persona = _resolve_persona(caller, None)
+    if not persona["is_admin"]:
+        raise HTTPException(status_code=403, detail="Administrator role required.")
 
     trace_dir = get_settings().observability.trace_dir
     records: list[dict[str, Any]] = []
@@ -783,7 +880,13 @@ def _round(value: float | None) -> float | None:
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
     """Error shape the UI already understands: {error, detail}."""
-    codes = {400: "bad_request", 401: "unauthorized", 500: "internal", 503: "unavailable"}
+    codes = {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        500: "internal",
+        503: "unavailable",
+    }
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": codes.get(exc.status_code, "error"), "detail": str(exc.detail)},

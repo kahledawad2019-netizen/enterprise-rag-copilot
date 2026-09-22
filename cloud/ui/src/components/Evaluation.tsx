@@ -71,6 +71,26 @@ export default function Evaluation() {
         </p>
       </header>
 
+      {!report.current && (
+        <div className="notice notice--danger">
+          <span className="notice__icon">!</span>
+          <span>
+            Historical baseline only — do not treat these scores as the deployed model's quality.
+            {" "}{report.stale_reasons.join("; ")}. Rebuild the index and rerun the held-out
+            evaluation before release.
+          </span>
+        </div>
+      )}
+
+      <div className="notice notice--info">
+        <span className="notice__icon">i</span>
+        <span>
+          Baseline {report.baseline_id}: {report.evaluated_embedding_provider}/
+          {report.evaluated_embedding_model}, index {report.evaluated_index_version}, generated{" "}
+          {new Date(report.generated_at_utc).toLocaleString()}.
+        </span>
+      </div>
+
       <div className="notice notice--info">
         <span className="notice__icon">i</span>
         <span>{report.headline}</span>

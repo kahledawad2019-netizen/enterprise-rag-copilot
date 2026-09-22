@@ -86,14 +86,16 @@ URL, and the bearer token is what keeps it private — which is why
 | `ui/mock/` — dev backend | **Built.** Working. |
 | `api/` — FastAPI adapter | **Built.** Not yet run against a live copilot. |
 | `api/Dockerfile` | **Written.** Not yet built — there is no Docker on this machine. |
-| Vanna Cloud provider | **Built and wired.** Needs your API key. |
+| Vanna Cloud provider | **Experimental only.** Legacy client; excluded from the production image. |
 | Database migration | **Not needed.** Azure SQL runs the existing T-SQL unchanged. |
 
 ### Still to do
 
 - Build the image and run it once. The Dockerfile has never been built,
   because there is no Docker here.
-- Provision Azure SQL and run `sql/001`–`008` against it.
+- Provision Azure SQL and run `sql/001`–`009` against it.
+- Provision server-mode Qdrant, build the index into it once, and verify that
+  `/health` reports a non-zero chunk count before sending traffic.
 - Rebuild the vector index against the new embedding model and re-run the
   evaluation. Changing the embedder invalidates the index *silently* - the
   vectors stop meaning anything but still return a confident top-8 - and the
@@ -108,7 +110,8 @@ URL, and the bearer token is what keeps it private — which is why
 - A container host: [Fly.io](https://fly.io), [Render](https://render.com), or
   Cloudflare Containers (needs a Workers paid plan).
 - An Azure account, for the free SQL Database offer.
-- A [Vanna](https://vanna.ai) API key, if you want Vanna Cloud.
+- A Vanna API key only for an isolated experiment; it is not part of the
+  production deployment described below.
 
 `wrangler` is not installed globally; every command below runs it through
 `npx`, which uses the version pinned in each `package.json`.
@@ -194,8 +197,13 @@ contained user that physically cannot write:
 
 ```sql
 CREATE USER copilot_app WITH PASSWORD = '<a long random password>';
-ALTER ROLE db_datareader ADD MEMBER copilot_app;
+ALTER ROLE copilot_readonly ADD MEMBER copilot_app;
 ```
+
+Do **not** add this user to `db_datareader`: that role is broader than the
+object denials configured by `sql/006_create_security.sql`. Script `009` also
+enables database-enforced Row-Level Security; the runner sets the verified
+tenant in SQL Server session context before every query.
 
 Point the container at `copilot_app`, not the admin login. `check_environment.py`
 then reports `[ OK ] privileges - read-only login` instead of `[WARN] this
@@ -217,8 +225,21 @@ fly launch --no-deploy --name copilot-api
 ```
 
 ```bash
-fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" MSSQL_SERVER="yourserver.database.windows.net" MSSQL_DATABASE="EnterpriseCopilot" MSSQL_AUTH_MODE=sql MSSQL_USERNAME="copilot_app" MSSQL_PASSWORD="..." MSSQL_TRUST_SERVER_CERTIFICATE=false VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud LLM_PROVIDER=openai LLM_BASE_URL="https://api.groq.com/openai/v1" LLM_API_KEY="gsk_..." LLM_MODEL=llama-3.3-70b-versatile EMBEDDING_PROVIDER=cloudflare EMBEDDING_MODEL=@cf/baai/bge-m3 EMBEDDING_CLOUDFLARE_ACCOUNT_ID="..." EMBEDDING_CLOUDFLARE_API_TOKEN="..."
+fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" COPILOT_DEMO_MODE=false COPILOT_IDENTITY_MAP_JSON='{"analyst@example.com":"analyst_na"}' MSSQL_SERVER="yourserver.database.windows.net" MSSQL_DATABASE="EnterpriseCopilot" MSSQL_AUTH_MODE=sql MSSQL_USERNAME="copilot_app" MSSQL_PASSWORD="..." MSSQL_TRUST_SERVER_CERTIFICATE=false TEXT_TO_SQL_PROVIDER=native LLM_PROVIDER=openai LLM_BASE_URL="https://api.groq.com/openai/v1" LLM_API_KEY="gsk_..." LLM_MODEL=llama-3.3-70b-versatile EMBEDDING_PROVIDER=cloudflare EMBEDDING_MODEL=@cf/baai/bge-m3 EMBEDDING_CLOUDFLARE_ACCOUNT_ID="..." EMBEDDING_CLOUDFLARE_API_TOKEN="..." QDRANT_MODE=server QDRANT_URL="https://your-cluster.qdrant.io" QDRANT_API_KEY="..." QDRANT_INDEX_VERSION="bge-m3-v1"
 ```
+
+Before the first deploy, run the index builder once from a secured operator or
+CI environment with the same `EMBEDDING_*` and `QDRANT_*` settings:
+
+```bash
+cd local-enterprise-copilot
+python scripts/build_index.py --rebuild
+python scripts/build_index.py --validate
+```
+
+Do not reuse the local qwen3 index: equal vector dimensions do not make two
+embedding spaces compatible. The deployed readiness check returns 503 until
+the shared Qdrant collection is populated.
 
 ```bash
 fly deploy
@@ -272,8 +293,10 @@ URL to get wrong between environments.
 
 ## 7. Lock it down with Cloudflare Access
 
-Until this step, anyone with the URL can ask questions and spend your
-inference budget.
+Production and staging fail closed until this step is configured: the Worker
+returns 503 rather than proxying an unauthenticated request. Only local
+development may set `AUTH_MODE=disabled` together with
+`ENVIRONMENT=development`.
 
 1. Zero Trust → Access → Applications → Add a self-hosted application.
 2. Domain: `copilot.example.com`.
@@ -291,6 +314,11 @@ trust the `CF-Access-Authenticated-User-Email` header on its own: a request
 that reaches the Worker without passing through Access can set any header it
 likes.
 
+The backend then maps the verified email to exactly one persona using
+`COPILOT_IDENTITY_MAP_JSON`. The browser's `persona` field is ignored outside
+demo mode, so a user cannot promote themselves to administrator. Unmapped
+identities receive 403.
+
 ---
 
 ## Secrets reference
@@ -304,7 +332,9 @@ Nothing in this table belongs in a file that git can see.
 | `LLM_API_KEY` | Container | `fly secrets set` | Groq key (`gsk_...`). The container has no GPU, so this is not optional. |
 | `EMBEDDING_CLOUDFLARE_API_TOKEN` | Container | `fly secrets set` | Workers AI token, **Workers AI: Read** permission. |
 | `MSSQL_SERVER`, `MSSQL_DATABASE`, `MSSQL_USERNAME` | Container | `fly secrets set` | Not secret, but set the same way so the connection is configured in one place. |
-| `VANNA_API_KEY` | Container | `fly secrets set` | Vanna Cloud key. Omit to stay local. |
+| `COPILOT_IDENTITY_MAP_JSON` | Container | `fly secrets set` | Email-to-persona authorization map. Treat the real employee list as sensitive. |
+| `QDRANT_API_KEY` | Container / index job | `fly secrets set` | Shared vector database credential. |
+| `VANNA_API_KEY` | Experimental container only | `fly secrets set` | Not used by the production profile; see `docs/vanna_cloud.md`. |
 | `ACCESS_AUD` | Worker (`vars`) | `wrangler.toml` | Not secret — an identifier. |
 | `ACCESS_TEAM_DOMAIN` | Worker (`vars`) | `wrangler.toml` | Not secret. |
 
@@ -350,7 +380,13 @@ reach your production backend. Put local overrides in `cloud/worker/.dev.vars`
 BACKEND_TOKEN=dev-token
 BACKEND_URL=http://localhost:8000
 ALLOWED_ORIGINS=http://localhost:5173
+ENVIRONMENT=development
+AUTH_MODE=disabled
 ```
+
+Run the backend with `COPILOT_DEMO_MODE=true` for this local persona-switching
+demo. Staging and production use `AUTH_MODE=required`; a missing Access AUD or
+team domain then fails closed with 503 instead of silently becoming public.
 
 To skip the Worker entirely and drive the backend directly:
 

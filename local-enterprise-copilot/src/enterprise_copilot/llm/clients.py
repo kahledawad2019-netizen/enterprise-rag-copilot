@@ -85,8 +85,8 @@ class OpenAICompatChatClient:
         model: str,
         messages: list[dict[str, Any]],
         options: dict[str, Any] | None = None,
-        format: str | None = None,  # noqa: A002 - matches Ollama's parameter name
-        keep_alive: str | None = None,  # noqa: ARG002 - Ollama-only, accepted and ignored
+        format: str | None = None,
+        keep_alive: str | None = None,
         stream: bool = False,
         **_: Any,
     ) -> dict[str, Any] | Iterator[dict[str, Any]]:
@@ -145,6 +145,8 @@ class OpenAICompatChatClient:
             raise ChatClientError(_http_error(self.base_url, response))
 
         for raw in response.iter_lines(decode_unicode=True):
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
             if not raw or not raw.startswith("data:"):
                 continue
             data = raw[5:].strip()
@@ -175,7 +177,7 @@ def _translate_options(options: dict[str, Any] | None) -> dict[str, Any]:
     translated: dict[str, Any] = {}
     if "temperature" in options:
         translated["temperature"] = max(float(options["temperature"]), MIN_TEMPERATURE)
-    if "num_predict" in options and options["num_predict"]:
+    if options.get("num_predict"):
         translated["max_tokens"] = int(options["num_predict"])
     if "top_p" in options:
         translated["top_p"] = options["top_p"]
@@ -231,7 +233,7 @@ class OpenAICompatEmbeddingClient:
             "Content-Type": "application/json",
         }
 
-    def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:  # noqa: A002
+    def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:
         import requests
 
         try:
@@ -276,13 +278,10 @@ class CloudflareEmbeddingClient:
             "Content-Type": "application/json",
         }
 
-    def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:  # noqa: A002
+    def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:
         import requests
 
-        url = (
-            f"https://api.cloudflare.com/client/v4/accounts/"
-            f"{self.account_id}/ai/run/{model}"
-        )
+        url = f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/ai/run/{model}"
         try:
             response = requests.post(
                 url, headers=self._headers, json={"text": input}, timeout=self.timeout
@@ -417,8 +416,12 @@ def build_embedding_client(settings: Settings | None = None) -> Any:
             f"EMBEDDING_PROVIDER={embeddings.provider} but EMBEDDING_API_KEY is not set."
         )
 
-    log.info("Embeddings via %s at %s (model %s)",
-             embeddings.provider, embeddings.base_url, embeddings.model)
+    log.info(
+        "Embeddings via %s at %s (model %s)",
+        embeddings.provider,
+        embeddings.base_url,
+        embeddings.model,
+    )
     return OpenAICompatEmbeddingClient(
         base_url=embeddings.base_url,
         api_key=embeddings.api_key.get_secret_value(),
@@ -439,5 +442,7 @@ def describe_providers(settings: Settings | None = None) -> dict[str, str]:
         "chat_key": "set" if settings.llm.api_key else "not set",
         "embedding_provider": settings.embeddings.provider,
         "embedding_model": settings.embedding_model,
-        "leaves_machine": "yes" if (settings.llm.is_hosted or settings.embeddings.is_hosted) else "no",
+        "leaves_machine": "yes"
+        if (settings.llm.is_hosted or settings.embeddings.is_hosted)
+        else "no",
     }

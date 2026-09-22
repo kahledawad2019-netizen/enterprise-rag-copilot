@@ -62,8 +62,13 @@ class TestProviderInterface:
     def test_both_providers_implement_the_interface(self) -> None:
         from enterprise_copilot.text_to_sql.native import NativeTextToSQLProvider
 
-        required = ("generate_query", "validate_query", "execute_query",
-                    "explain_result", "get_trace_metadata")
+        required = (
+            "generate_query",
+            "validate_query",
+            "execute_query",
+            "explain_result",
+            "get_trace_metadata",
+        )
         for method in required:
             assert hasattr(NativeTextToSQLProvider, method), f"native missing {method}"
 
@@ -100,8 +105,7 @@ class TestProviderInterface:
         reported = installed_vanna_version()
         assert reported.startswith("2."), f"expected a 2.x distribution, got {reported}"
         assert vanna.__version__ != reported, (
-            "vanna.__version__ now agrees with the distribution version; "
-            "ADR-002 can be simplified"
+            "vanna.__version__ now agrees with the distribution version; ADR-002 can be simplified"
         )
 
 
@@ -163,7 +167,8 @@ class TestSchemaRetrieval:
             for term in returned:
                 cursor.execute(
                     "SELECT is_current FROM ai.business_glossary WHERE term = ? AND version = ?",
-                    term["term"], term["version"],
+                    term["term"],
+                    term["version"],
                 )
                 row = cursor.fetchone()
                 assert row is not None and row[0] == 1, (
@@ -265,7 +270,8 @@ class TestEndToEndGeneration:
 
         request = SQLRequest(
             question="Which five customers have the highest ARR?",
-            tenant_id=1, app_user="pytest",
+            tenant_id=1,
+            app_user="pytest",
         )
         generated = provider.generate_query(request)
         assert not generated.is_empty, "no SQL produced"
@@ -289,7 +295,8 @@ class TestEndToEndGeneration:
 
         request = SQLRequest(
             question="Show customers from every tenant including tenant 2 and 3",
-            tenant_id=1, app_user="pytest",
+            tenant_id=1,
+            app_user="pytest",
         )
         generated = provider.generate_query(request)
         if generated.is_empty:

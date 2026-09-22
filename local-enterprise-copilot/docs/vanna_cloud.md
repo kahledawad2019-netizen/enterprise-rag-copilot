@@ -1,5 +1,14 @@
 # Vanna Cloud
 
+> **Experimental / no production deployment.** The public Vanna repository
+> was archived on 29 March 2026, and the integration below uses the legacy
+> `vanna.legacy` remote API rather than the V2 Agent API. Vanna's current
+> security documentation describes its premium backend as development/demo
+> software and does not publish a firm retention period. The production image
+> therefore excludes Vanna; staging uses `TEXT_TO_SQL_PROVIDER=native` until a
+> live account smoke test, dependency review, data-processing terms and
+> retention/deletion guarantees have been approved.
+
 Read this before setting `VANNA_API_KEY`. Enabling Vanna Cloud is the only
 change in this project that sends data to a third party, and it contradicts
 claims made elsewhere in this repository unless those are updated with it.
@@ -28,10 +37,9 @@ the prompt to refine a follow-up; `VANNA_ALLOW_LLM_TO_SEE_DATA` controls it,
 defaults to false, and should stay false. That flag is the difference between
 sending a schema and sending customer data.
 
-**Pick `cloud` in a container.** `hybrid` calls Ollama, and the deployment
-container has no GPU and no local model. `_build_cloud_vanna_class("hybrid")`
-fails at construction with a connection error if Ollama is absent — which is
-the correct, loud failure, but it is not a deployment you can ship.
+Do not select either mode in the production container. If you run an isolated
+legacy smoke test, `cloud` avoids the Ollama dependency while `hybrid` calls a
+local Ollama instance.
 
 ### What does not change
 
@@ -65,14 +73,12 @@ VANNA_MODEL=enterprise-copilot
 VANNA_MODE=hybrid
 ```
 
-**In the deployed container** — never in a file. Set it as a platform secret:
+**In an isolated experimental container** — never in a file. Install
+`cloud/api/requirements-vanna-experimental.txt`, then set the key as a platform
+secret:
 
 ```bash
 fly secrets set VANNA_API_KEY=vn-your-key-here VANNA_MODE=cloud
-```
-
-```bash
-wrangler secret put VANNA_API_KEY
 ```
 
 The setting is a pydantic `SecretStr`, so logging or dumping the settings

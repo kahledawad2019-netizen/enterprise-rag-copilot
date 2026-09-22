@@ -158,7 +158,9 @@ class VannaCloudTextToSQLProvider(VannaTextToSQLProvider):
 
         log.info(
             "Vanna Cloud provider ready (mode=%s, corpus=%r, vanna %s)",
-            self.mode, cloud.model, self.vanna_version,
+            self.mode,
+            cloud.model,
+            self.vanna_version,
         )
 
     # -- training ----------------------------------------------------------
@@ -180,7 +182,8 @@ class VannaCloudTextToSQLProvider(VannaTextToSQLProvider):
                 log.info(
                     "Vanna Cloud corpus %r already holds %d rows; skipping upload. "
                     "Use force=True after a schema change.",
-                    self.settings.vanna_cloud.model, existing,
+                    self.settings.vanna_cloud.model,
+                    existing,
                 )
                 self._trained = True
                 return {"existing": existing}
@@ -188,25 +191,33 @@ class VannaCloudTextToSQLProvider(VannaTextToSQLProvider):
         return super().ensure_trained(force=True)
 
     def _remote_training_rows(self) -> int:
-        """How many rows the remote corpus holds. 0 on any failure.
+        """How many rows the remote corpus holds.
 
-        A network hiccup here must not stop the provider: the worst case of
-        guessing zero is that training is re-uploaded, which is wasteful but
-        correct, while the worst case of raising is an outage.
+        Fail closed when the remote state cannot be read. Treating a network
+        error as an empty corpus can repeatedly export DDL, glossary and SQL
+        examples, and concurrent containers can duplicate the training set.
         """
         try:
             data = self._vanna.get_training_data()
         except Exception as exc:
-            log.warning("Could not read the Vanna Cloud corpus: %s", exc)
-            return 0
+            raise RuntimeError(
+                "Could not verify the Vanna Cloud training corpus; refusing to upload."
+            ) from exc
         try:
-            return 0 if data is None else int(len(data))
-        except TypeError:
-            return 0
+            return 0 if data is None else len(data)
+        except TypeError as exc:
+            raise RuntimeError("Vanna Cloud returned an invalid training-data response.") from exc
 
     # -- generation --------------------------------------------------------
     def generate_query(self, request: SQLRequest) -> GeneratedSQL:
-        self.ensure_trained()
+        if not self._trained:
+            existing = self._remote_training_rows()
+            if existing <= 0:
+                raise RuntimeError(
+                    "The Vanna Cloud corpus is empty. Run the explicit, reviewed training job "
+                    "before serving user traffic; request handling never uploads training data."
+                )
+            self._trained = True
         started = time.perf_counter()
 
         context = self.schema.build_context(request.question, tenant_id=request.tenant_id)
@@ -241,9 +252,7 @@ class VannaCloudTextToSQLProvider(VannaTextToSQLProvider):
             vanna_version=self.vanna_version,
             vanna_mode=self.mode,
             vanna_corpus=self.settings.vanna_cloud.model,
-            model=(
-                "vanna-hosted" if self.mode == "cloud" else self.settings.chat_model
-            ),
+            model=("vanna-hosted" if self.mode == "cloud" else self.settings.chat_model),
             tables_offered=context.table_names(),
             glossary_terms=[g["term"] for g in context.glossary],
             generation_ms=generated.generation_ms,
@@ -263,11 +272,13 @@ class VannaCloudTextToSQLProvider(VannaTextToSQLProvider):
             "mode": cloud.mode,
             "corpus": cloud.model,
             "endpoint": cloud.endpoint,
-            "generation": "vanna hosted model" if cloud.mode == "cloud" else self.settings.chat_model,
+            "generation": "vanna hosted model"
+            if cloud.mode == "cloud"
+            else self.settings.chat_model,
             "sends_question": True,
             "sends_results": cloud.allow_llm_to_see_data,
             "vanna_version": self.vanna_version,
         }
 
 
-__all__ = ["VannaCloudTextToSQLProvider", "VannaCloudNotConfiguredError"]
+__all__ = ["VannaCloudNotConfiguredError", "VannaCloudTextToSQLProvider"]

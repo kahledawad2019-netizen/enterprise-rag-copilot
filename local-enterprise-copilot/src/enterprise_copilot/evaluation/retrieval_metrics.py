@@ -128,8 +128,11 @@ def evaluate_query(
 
     relevant = set(relevant_docs)
     evaluation = QueryEvaluation(
-        query_id=query_id, query=query, category=category,
-        relevant_docs=list(relevant_docs), retrieved_docs=retrieved,
+        query_id=query_id,
+        query=query,
+        category=category,
+        relevant_docs=list(relevant_docs),
+        retrieved_docs=retrieved,
         latency_ms=latency_ms,
     )
 
@@ -257,6 +260,10 @@ def compare_strategies(results: dict[str, AggregateMetrics]) -> str:
 
 
 __all__ = [
-    "AggregateMetrics", "QueryEvaluation", "aggregate", "compare_strategies",
-    "evaluate_query", "ndcg",
+    "AggregateMetrics",
+    "QueryEvaluation",
+    "aggregate",
+    "compare_strategies",
+    "evaluate_query",
+    "ndcg",
 ]

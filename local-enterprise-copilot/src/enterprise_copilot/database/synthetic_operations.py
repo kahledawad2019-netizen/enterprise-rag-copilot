@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, time, timedelta
+from typing import Any
 
 from .synthetic import (
     DATA_END,
@@ -18,7 +19,6 @@ from .synthetic import (
     TICKET_CATEGORIES,
     SyntheticGenerator,
     _add_months,
-    _season_multiplier,
 )
 
 log = logging.getLogger(__name__)
@@ -69,16 +69,18 @@ def generate_usage(gen: SyntheticGenerator) -> None:
                 weekend_factor = 0.25 if weekday >= 5 else 1.0
                 users = int(seats * adoption * weekend_factor * rng.uniform(0.7, 1.3))
                 users = max(0, users)
-                gen.data.usage.append({
-                    "_customer_index": customer["_index"],
-                    "product_id": product_id,
-                    "tenant_id": customer["tenant_id"],
-                    "usage_date": cursor,
-                    "active_users": users,
-                    "sessions": int(users * rng.uniform(1.2, 4.0)),
-                    "api_calls": int(users * rng.uniform(50, 800)),
-                    "storage_gb": round(users * rng.uniform(0.05, 1.2), 3),
-                })
+                gen.data.usage.append(
+                    {
+                        "_customer_index": customer["_index"],
+                        "product_id": product_id,
+                        "tenant_id": customer["tenant_id"],
+                        "usage_date": cursor,
+                        "active_users": users,
+                        "sessions": int(users * rng.uniform(1.2, 4.0)),
+                        "api_calls": int(users * rng.uniform(50, 800)),
+                        "storage_gb": round(users * rng.uniform(0.05, 1.2), 3),
+                    }
+                )
                 cursor += timedelta(days=1)
 
 
@@ -144,51 +146,58 @@ def generate_billing(gen: SyntheticGenerator) -> None:
                 paid_date = cursor + timedelta(days=rng.randint(1, 30))
 
             invoice_index = len(gen.data.invoices)
-            gen.data.invoices.append({
-                "_index": invoice_index,
-                "invoice_number": f"INV-{cursor.year}-{invoice_counter:06d}",
-                "_customer_index": customer["_index"],
-                "_subscription_index": sub["_index"],
-                "tenant_id": customer["tenant_id"],
-                "issue_date": cursor,
-                "due_date": due,
-                "period_start": cursor,
-                "period_end": min(period_end, DATA_END),
-                "currency_code": customer["billing_currency"],
-                "subtotal_amount": subtotal,
-                "tax_amount": tax,
-                "total_amount": total,
-                "amount_paid": amount_paid,
-                "status": status,
-                "paid_date": paid_date,
-            })
-            gen.data.invoice_items.append({
-                "_invoice_index": invoice_index,
-                "product_id": plan["product_id"],
-                "plan_id": plan["plan_id"],
-                "description": f"{plan['plan_name']} - {sub['seats']} seats "
-                               f"({cursor:%Y-%m-%d} to {min(period_end, DATA_END):%Y-%m-%d})",
-                "quantity": float(sub["seats"]),
-                "unit_price": round(subtotal / max(sub["seats"], 1), 4),
-                "line_amount": subtotal,
-            })
+            gen.data.invoices.append(
+                {
+                    "_index": invoice_index,
+                    "invoice_number": f"INV-{cursor.year}-{invoice_counter:06d}",
+                    "_customer_index": customer["_index"],
+                    "_subscription_index": sub["_index"],
+                    "tenant_id": customer["tenant_id"],
+                    "issue_date": cursor,
+                    "due_date": due,
+                    "period_start": cursor,
+                    "period_end": min(period_end, DATA_END),
+                    "currency_code": customer["billing_currency"],
+                    "subtotal_amount": subtotal,
+                    "tax_amount": tax,
+                    "total_amount": total,
+                    "amount_paid": amount_paid,
+                    "status": status,
+                    "paid_date": paid_date,
+                }
+            )
+            gen.data.invoice_items.append(
+                {
+                    "_invoice_index": invoice_index,
+                    "product_id": plan["product_id"],
+                    "plan_id": plan["plan_id"],
+                    "description": f"{plan['plan_name']} - {sub['seats']} seats "
+                    f"({cursor:%Y-%m-%d} to {min(period_end, DATA_END):%Y-%m-%d})",
+                    "quantity": float(sub["seats"]),
+                    "unit_price": round(subtotal / max(sub["seats"], 1), 4),
+                    "line_amount": subtotal,
+                }
+            )
 
             if paid_date is not None and amount_paid > 0:
                 payment_index = len(gen.data.payments)
-                gen.data.payments.append({
-                    "_index": payment_index,
-                    "_invoice_index": invoice_index,
-                    "_customer_index": customer["_index"],
-                    "tenant_id": customer["tenant_id"],
-                    "payment_date": paid_date,
-                    "amount": amount_paid,
-                    "currency_code": customer["billing_currency"],
-                    "method": rng.choices(["card", "ach", "wire", "check"],
-                                          weights=[0.45, 0.3, 0.2, 0.05])[0],
-                    "status": "succeeded",
-                    "reference": f"PAY-{payment_index + 1:07d}",
-                    "days_late": days_late,
-                })
+                gen.data.payments.append(
+                    {
+                        "_index": payment_index,
+                        "_invoice_index": invoice_index,
+                        "_customer_index": customer["_index"],
+                        "tenant_id": customer["tenant_id"],
+                        "payment_date": paid_date,
+                        "amount": amount_paid,
+                        "currency_code": customer["billing_currency"],
+                        "method": rng.choices(
+                            ["card", "ach", "wire", "check"], weights=[0.45, 0.3, 0.2, 0.05]
+                        )[0],
+                        "status": "succeeded",
+                        "reference": f"PAY-{payment_index + 1:07d}",
+                        "days_late": days_late,
+                    }
+                )
 
                 # ~3.5% of paid invoices attract a refund; ~40% of those partial.
                 if rng.random() < 0.035:
@@ -197,20 +206,23 @@ def generate_billing(gen: SyntheticGenerator) -> None:
                     code, reason = rng.choice(REFUND_REASONS)
                     refund_date = paid_date + timedelta(days=rng.randint(3, 60))
                     if refund_date <= DATA_END:
-                        gen.data.refunds.append({
-                            "_invoice_index": invoice_index,
-                            "_payment_index": payment_index,
-                            "_customer_index": customer["_index"],
-                            "tenant_id": customer["tenant_id"],
-                            "refund_date": refund_date,
-                            "amount": amount,
-                            "currency_code": customer["billing_currency"],
-                            "reason_code": code,
-                            "reason": reason,
-                            "is_partial": 1 if partial else 0,
-                            "approved_by": rng.choice(
-                                ["j.okafor", "m.silva", "a.novak", "r.tanaka"]),
-                        })
+                        gen.data.refunds.append(
+                            {
+                                "_invoice_index": invoice_index,
+                                "_payment_index": payment_index,
+                                "_customer_index": customer["_index"],
+                                "tenant_id": customer["tenant_id"],
+                                "refund_date": refund_date,
+                                "amount": amount,
+                                "currency_code": customer["billing_currency"],
+                                "reason_code": code,
+                                "reason": reason,
+                                "is_partial": 1 if partial else 0,
+                                "approved_by": rng.choice(
+                                    ["j.okafor", "m.silva", "a.novak", "r.tanaka"]
+                                ),
+                            }
+                        )
 
             cursor = _add_months(cursor, step_months)
 
@@ -228,7 +240,7 @@ def generate_support(gen: SyntheticGenerator) -> None:
     """
     rng = gen.rng
     policies = gen.reference["sla_policies"]
-    low_usage = getattr(gen, "low_usage_cohort", set())
+    low_usage: set[int] = getattr(gen, "low_usage_cohort", set())
 
     # Customers eligible for tickets: anyone with a subscription.
     eligible = [c for c in gen.data.customers if c["status"] != "trial"]
@@ -255,7 +267,9 @@ def generate_support(gen: SyntheticGenerator) -> None:
         # ~5% open between 23:00 and 23:59 UTC so the UTC day and the customer's
         # local day differ. Date-bucketing bugs surface here.
         if rng.random() < 0.05:
-            opened_at = datetime.combine(opened_day, time(23, rng.randint(0, 59), rng.randint(0, 59)))
+            opened_at = datetime.combine(
+                opened_day, time(23, rng.randint(0, 59), rng.randint(0, 59))
+            )
         else:
             opened_at = datetime.combine(opened_day, time(rng.randint(0, 22), rng.randint(0, 59)))
 
@@ -281,8 +295,10 @@ def generate_support(gen: SyntheticGenerator) -> None:
             first_response_at = opened_at + timedelta(minutes=actual_first)
 
         resolved_at, actual_resolution = None, None
-        status = rng.choices(["closed", "resolved", "open", "pending", "escalated"],
-                             weights=[0.55, 0.22, 0.10, 0.08, 0.05])[0]
+        status = rng.choices(
+            ["closed", "resolved", "open", "pending", "escalated"],
+            weights=[0.55, 0.22, 0.10, 0.08, 0.05],
+        )[0]
         if status in ("closed", "resolved"):
             breach_resolution = rng.random() < 0.07
             if breach_resolution:
@@ -298,82 +314,110 @@ def generate_support(gen: SyntheticGenerator) -> None:
         ticket_index = len(gen.data.tickets)
         product_id = rng.choice([p["product_id"] for p in gen.reference["products"]])
 
-        gen.data.tickets.append({
-            "_index": ticket_index,
-            "ticket_number": f"TKT-{ticket_index + 1:07d}",
-            "_customer_index": customer["_index"],
-            "product_id": product_id,
-            "tenant_id": customer["tenant_id"],
-            "opened_at_utc": opened_at,
-            "first_response_at_utc": first_response_at,
-            "resolved_at_utc": resolved_at,
-            "closed_at_utc": resolved_at + timedelta(hours=rng.randint(1, 72))
-                             if (resolved_at and status == "closed") else None,
-            "priority": priority,
-            "category": rng.choice(TICKET_CATEGORIES),
-            "channel": rng.choices(["email", "portal", "phone", "chat"],
-                                   weights=[0.4, 0.35, 0.1, 0.15])[0],
-            "status": status,
-            "subject": _subject(rng, priority),
-            # ~55% missing CSAT: most customers never answer the survey.
-            "satisfaction_score": None if rng.random() < 0.55 else rng.choices(
-                [1, 2, 3, 4, 5], weights=[0.06, 0.09, 0.20, 0.35, 0.30])[0],
-        })
+        gen.data.tickets.append(
+            {
+                "_index": ticket_index,
+                "ticket_number": f"TKT-{ticket_index + 1:07d}",
+                "_customer_index": customer["_index"],
+                "product_id": product_id,
+                "tenant_id": customer["tenant_id"],
+                "opened_at_utc": opened_at,
+                "first_response_at_utc": first_response_at,
+                "resolved_at_utc": resolved_at,
+                "closed_at_utc": resolved_at + timedelta(hours=rng.randint(1, 72))
+                if (resolved_at and status == "closed")
+                else None,
+                "priority": priority,
+                "category": rng.choice(TICKET_CATEGORIES),
+                "channel": rng.choices(
+                    ["email", "portal", "phone", "chat"], weights=[0.4, 0.35, 0.1, 0.15]
+                )[0],
+                "status": status,
+                "subject": _subject(rng, priority),
+                # ~55% missing CSAT: most customers never answer the survey.
+                "satisfaction_score": None
+                if rng.random() < 0.55
+                else rng.choices([1, 2, 3, 4, 5], weights=[0.06, 0.09, 0.20, 0.35, 0.30])[0],
+            }
+        )
 
-        gen.data.ticket_events.append({
-            "_ticket_index": ticket_index, "tenant_id": customer["tenant_id"],
-            "event_at_utc": opened_at, "event_type": "created",
-            "actor_type": "customer", "notes": None,
-        })
+        gen.data.ticket_events.append(
+            {
+                "_ticket_index": ticket_index,
+                "tenant_id": customer["tenant_id"],
+                "event_at_utc": opened_at,
+                "event_type": "created",
+                "actor_type": "customer",
+                "notes": None,
+            }
+        )
         if first_response_at:
-            gen.data.ticket_events.append({
-                "_ticket_index": ticket_index, "tenant_id": customer["tenant_id"],
-                "event_at_utc": first_response_at, "event_type": "first_response",
-                "actor_type": "agent", "notes": None,
-            })
+            gen.data.ticket_events.append(
+                {
+                    "_ticket_index": ticket_index,
+                    "tenant_id": customer["tenant_id"],
+                    "event_at_utc": first_response_at,
+                    "event_type": "first_response",
+                    "actor_type": "agent",
+                    "notes": None,
+                }
+            )
         if status == "escalated":
-            gen.data.ticket_events.append({
-                "_ticket_index": ticket_index, "tenant_id": customer["tenant_id"],
-                "event_at_utc": opened_at + timedelta(minutes=rng.randint(30, 600)),
-                "event_type": "escalated", "actor_type": "agent",
-                "notes": "Escalated to tier 2",
-            })
+            gen.data.ticket_events.append(
+                {
+                    "_ticket_index": ticket_index,
+                    "tenant_id": customer["tenant_id"],
+                    "event_at_utc": opened_at + timedelta(minutes=rng.randint(30, 600)),
+                    "event_type": "escalated",
+                    "actor_type": "agent",
+                    "notes": "Escalated to tier 2",
+                }
+            )
         if resolved_at:
-            gen.data.ticket_events.append({
-                "_ticket_index": ticket_index, "tenant_id": customer["tenant_id"],
-                "event_at_utc": resolved_at, "event_type": "resolved",
-                "actor_type": "agent", "notes": None,
-            })
+            gen.data.ticket_events.append(
+                {
+                    "_ticket_index": ticket_index,
+                    "tenant_id": customer["tenant_id"],
+                    "event_at_utc": resolved_at,
+                    "event_type": "resolved",
+                    "actor_type": "agent",
+                    "notes": None,
+                }
+            )
 
         # Record breaches against the resolved policy.
         if policy:
             if first_response_at is None or (actual_first and actual_first > target_first):
                 measured = actual_first if actual_first is not None else target_first * 4
-                gen.data.sla_breaches.append({
-                    "_ticket_index": ticket_index,
-                    "_customer_index": customer["_index"],
-                    "sla_policy_id": policy["sla_policy_id"],
-                    "tenant_id": customer["tenant_id"],
-                    "breach_type": "first_response",
-                    "target_minutes": target_first,
-                    "actual_minutes": measured,
-                    "breach_minutes": max(1, measured - target_first),
-                    "detected_at_utc": opened_at + timedelta(minutes=target_first),
-                    "credit_issued": 1 if rng.random() < 0.3 else 0,
-                })
+                gen.data.sla_breaches.append(
+                    {
+                        "_ticket_index": ticket_index,
+                        "_customer_index": customer["_index"],
+                        "sla_policy_id": policy["sla_policy_id"],
+                        "tenant_id": customer["tenant_id"],
+                        "breach_type": "first_response",
+                        "target_minutes": target_first,
+                        "actual_minutes": measured,
+                        "breach_minutes": max(1, measured - target_first),
+                        "detected_at_utc": opened_at + timedelta(minutes=target_first),
+                        "credit_issued": 1 if rng.random() < 0.3 else 0,
+                    }
+                )
             if actual_resolution is not None and actual_resolution > target_resolution:
-                gen.data.sla_breaches.append({
-                    "_ticket_index": ticket_index,
-                    "_customer_index": customer["_index"],
-                    "sla_policy_id": policy["sla_policy_id"],
-                    "tenant_id": customer["tenant_id"],
-                    "breach_type": "resolution",
-                    "target_minutes": target_resolution,
-                    "actual_minutes": actual_resolution,
-                    "breach_minutes": max(1, actual_resolution - target_resolution),
-                    "detected_at_utc": opened_at + timedelta(minutes=target_resolution),
-                    "credit_issued": 1 if rng.random() < 0.4 else 0,
-                })
+                gen.data.sla_breaches.append(
+                    {
+                        "_ticket_index": ticket_index,
+                        "_customer_index": customer["_index"],
+                        "sla_policy_id": policy["sla_policy_id"],
+                        "tenant_id": customer["tenant_id"],
+                        "breach_type": "resolution",
+                        "target_minutes": target_resolution,
+                        "actual_minutes": actual_resolution,
+                        "breach_minutes": max(1, actual_resolution - target_resolution),
+                        "detected_at_utc": opened_at + timedelta(minutes=target_resolution),
+                        "credit_issued": 1 if rng.random() < 0.4 else 0,
+                    }
+                )
 
 
 def _tier_by_customer(gen: SyntheticGenerator) -> dict[int, str]:
@@ -403,14 +447,30 @@ def _policy_for(policies: list[dict], tier: str, priority: str, when: date) -> d
 
 def _subject(rng, priority: str) -> str:
     templates = {
-        "P1": ["Production outage - service unreachable", "Complete data pipeline failure",
-               "All users locked out after SSO change", "Critical: dashboards returning errors"],
-        "P2": ["Reports timing out for large datasets", "Intermittent API 502 responses",
-               "Scheduled sync failing since last night", "Significant performance degradation"],
-        "P3": ["Question about billing cycle", "How do I export to Parquet?",
-               "Column mapping not saving", "Request to add a new integration"],
-        "P4": ["Documentation typo", "Feature request: dark mode",
-               "Clarification on seat counting", "Cosmetic issue in report header"],
+        "P1": [
+            "Production outage - service unreachable",
+            "Complete data pipeline failure",
+            "All users locked out after SSO change",
+            "Critical: dashboards returning errors",
+        ],
+        "P2": [
+            "Reports timing out for large datasets",
+            "Intermittent API 502 responses",
+            "Scheduled sync failing since last night",
+            "Significant performance degradation",
+        ],
+        "P3": [
+            "Question about billing cycle",
+            "How do I export to Parquet?",
+            "Column mapping not saving",
+            "Request to add a new integration",
+        ],
+        "P4": [
+            "Documentation typo",
+            "Feature request: dark mode",
+            "Clarification on seat counting",
+            "Cosmetic issue in report header",
+        ],
     }
     return rng.choice(templates[priority])
 
@@ -428,21 +488,21 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
     rng = gen.rng
     products = gen.reference["products"]
 
-    fixed = [
+    fixed: list[dict[str, Any]] = [
         {
             "incident_code": "INC-2025-0042",
             "title": "Multi-region authentication outage affecting Northwind Analytics",
             "severity": "SEV1",
             "product_code": "NW-ANALYTICS",
-            "affected_region": None,          # platform-wide
+            "affected_region": None,  # platform-wide
             "started_at_utc": datetime(2025, 6, 14, 2, 17),
             "detected_at_utc": datetime(2025, 6, 14, 2, 41),
             "resolved_at_utc": datetime(2025, 6, 14, 11, 5),
             "status": "resolved",
             "root_cause": "An expired intermediate signing certificate was not rotated by the "
-                          "automated renewal job because the job silently failed a week earlier. "
-                          "Token validation began rejecting all sessions once the cached "
-                          "certificate expired.",
+            "automated renewal job because the job silently failed a week earlier. "
+            "Token validation began rejecting all sessions once the cached "
+            "certificate expired.",
             "postmortem_doc_id": "DOC-PM-2025-0042",
         },
         {
@@ -456,7 +516,7 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
             "resolved_at_utc": datetime(2025, 4, 8, 16, 20),
             "status": "resolved",
             "root_cause": "A misconfigured autoscaling threshold prevented the EMEA ingestion "
-                          "fleet from scaling during a traffic surge.",
+            "fleet from scaling during a traffic surge.",
             "postmortem_doc_id": "DOC-PM-2025-0031",
         },
         {
@@ -470,7 +530,7 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
             "resolved_at_utc": datetime(2026, 2, 19, 9, 45),
             "status": "resolved",
             "root_cause": "A slow query plan regression after a statistics update caused report "
-                          "timeouts for large tenants in the APAC region.",
+            "timeouts for large tenants in the APAC region.",
             "postmortem_doc_id": "DOC-PM-2026-0007",
         },
     ]
@@ -478,20 +538,22 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
     product_by_code = {p["product_code"]: p["product_id"] for p in products}
 
     for spec in fixed:
-        gen.data.incidents.append({
-            "_index": len(gen.data.incidents),
-            "incident_code": spec["incident_code"],
-            "title": spec["title"],
-            "severity": spec["severity"],
-            "product_id": product_by_code.get(spec["product_code"]),
-            "affected_region": spec["affected_region"],
-            "started_at_utc": spec["started_at_utc"],
-            "detected_at_utc": spec["detected_at_utc"],
-            "resolved_at_utc": spec["resolved_at_utc"],
-            "status": spec["status"],
-            "root_cause": spec["root_cause"],
-            "postmortem_doc_id": spec["postmortem_doc_id"],
-        })
+        gen.data.incidents.append(
+            {
+                "_index": len(gen.data.incidents),
+                "incident_code": spec["incident_code"],
+                "title": spec["title"],
+                "severity": spec["severity"],
+                "product_id": product_by_code.get(spec["product_code"]),
+                "affected_region": spec["affected_region"],
+                "started_at_utc": spec["started_at_utc"],
+                "detected_at_utc": spec["detected_at_utc"],
+                "resolved_at_utc": spec["resolved_at_utc"],
+                "status": spec["status"],
+                "root_cause": spec["root_cause"],
+                "postmortem_doc_id": spec["postmortem_doc_id"],
+            }
+        )
 
     # Remaining incidents are randomised but still deterministic.
     for n in range(gen.volumes.incidents - len(fixed)):
@@ -501,32 +563,38 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
         )
         duration = rng.randint(45, 900)
         severity = rng.choices(["SEV1", "SEV2", "SEV3"], weights=[0.15, 0.4, 0.45])[0]
-        product = rng.choice(products + [None])
-        gen.data.incidents.append({
-            "_index": len(gen.data.incidents),
-            "incident_code": f"INC-{started.year}-{9000 + n:04d}",
-            "title": rng.choice([
-                "Elevated error rate on the public API",
-                "Delayed webhook delivery",
-                "Search indexing lag",
-                "Export jobs queued longer than expected",
-                "Intermittent login failures",
-            ]),
-            "severity": severity,
-            "product_id": product["product_id"] if product else None,
-            "affected_region": rng.choice([None, "North America", "EMEA", "APAC"]),
-            "started_at_utc": started,
-            "detected_at_utc": started + timedelta(minutes=rng.randint(3, 60)),
-            "resolved_at_utc": started + timedelta(minutes=duration),
-            "status": "resolved",
-            "root_cause": rng.choice([
-                "A deployment introduced a regression that was rolled back.",
-                "An upstream provider degraded and traffic was failed over.",
-                "A database connection pool was exhausted under peak load.",
-                "A configuration change was applied to the wrong environment.",
-            ]),
-            "postmortem_doc_id": None,
-        })
+        product: dict[str, Any] | None = rng.choice([*products, None])
+        gen.data.incidents.append(
+            {
+                "_index": len(gen.data.incidents),
+                "incident_code": f"INC-{started.year}-{9000 + n:04d}",
+                "title": rng.choice(
+                    [
+                        "Elevated error rate on the public API",
+                        "Delayed webhook delivery",
+                        "Search indexing lag",
+                        "Export jobs queued longer than expected",
+                        "Intermittent login failures",
+                    ]
+                ),
+                "severity": severity,
+                "product_id": product["product_id"] if product else None,
+                "affected_region": rng.choice([None, "North America", "EMEA", "APAC"]),
+                "started_at_utc": started,
+                "detected_at_utc": started + timedelta(minutes=rng.randint(3, 60)),
+                "resolved_at_utc": started + timedelta(minutes=duration),
+                "status": "resolved",
+                "root_cause": rng.choice(
+                    [
+                        "A deployment introduced a regression that was rolled back.",
+                        "An upstream provider degraded and traffic was failed over.",
+                        "A database connection pool was exhausted under peak load.",
+                        "A configuration change was applied to the wrong environment.",
+                    ]
+                ),
+                "postmortem_doc_id": None,
+            }
+        )
 
     # Impact: only customers matching the incident's product and region scope.
     subs_by_customer: dict[int, set[int]] = {}
@@ -537,7 +605,9 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
         started_date = incident["started_at_utc"].date()
         duration = 0
         if incident["resolved_at_utc"]:
-            duration = int((incident["resolved_at_utc"] - incident["started_at_utc"]).total_seconds() // 60)
+            duration = int(
+                (incident["resolved_at_utc"] - incident["started_at_utc"]).total_seconds() // 60
+            )
 
         for customer in gen.data.customers:
             if customer["signup_date"] > started_date:
@@ -546,25 +616,32 @@ def generate_incidents(gen: SyntheticGenerator) -> None:
                 continue
             if incident["affected_region"] and customer["region"] != incident["affected_region"]:
                 continue
-            if incident["product_id"] is not None:
-                if incident["product_id"] not in subs_by_customer.get(customer["_index"], set()):
-                    continue
+            if incident["product_id"] is not None and incident[
+                "product_id"
+            ] not in subs_by_customer.get(customer["_index"], set()):
+                continue
             # Not every in-scope customer notices a degradation.
             if incident["severity"] != "SEV1" and rng.random() < 0.45:
                 continue
 
-            level = ("full_outage" if incident["severity"] == "SEV1"
-                     else rng.choices(["degraded", "minimal"], weights=[0.65, 0.35])[0])
+            level = (
+                "full_outage"
+                if incident["severity"] == "SEV1"
+                else rng.choices(["degraded", "minimal"], weights=[0.65, 0.35])[0]
+            )
             downtime = duration if level == "full_outage" else int(duration * rng.uniform(0.1, 0.6))
-            gen.data.incident_impact.append({
-                "_incident_index": incident["_index"],
-                "_customer_index": customer["_index"],
-                "tenant_id": customer["tenant_id"],
-                "impact_level": level,
-                "downtime_minutes": downtime,
-                "credit_amount": round(rng.uniform(50, 2500), 4)
-                                 if (level == "full_outage" and rng.random() < 0.5) else 0.0,
-            })
+            gen.data.incident_impact.append(
+                {
+                    "_incident_index": incident["_index"],
+                    "_customer_index": customer["_index"],
+                    "tenant_id": customer["tenant_id"],
+                    "impact_level": level,
+                    "downtime_minutes": downtime,
+                    "credit_amount": round(rng.uniform(50, 2500), 4)
+                    if (level == "full_outage" and rng.random() < 0.5)
+                    else 0.0,
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -578,23 +655,26 @@ def generate_health(gen: SyntheticGenerator) -> None:
     an answer that cites a risk band can be checked against its evidence.
     """
     rng = gen.rng
-    low_usage = getattr(gen, "low_usage_cohort", set())
+    low_usage: set[int] = getattr(gen, "low_usage_cohort", set())
 
     overdue_by_customer: dict[int, int] = {}
     for invoice in gen.data.invoices:
         if invoice["status"] in ("open", "overdue", "partial"):
-            overdue_by_customer[invoice["_customer_index"]] = \
+            overdue_by_customer[invoice["_customer_index"]] = (
                 overdue_by_customer.get(invoice["_customer_index"], 0) + 1
+            )
 
     tickets_by_customer: dict[int, int] = {}
     for ticket in gen.data.tickets:
-        tickets_by_customer[ticket["_customer_index"]] = \
+        tickets_by_customer[ticket["_customer_index"]] = (
             tickets_by_customer.get(ticket["_customer_index"], 0) + 1
+        )
 
     breaches_by_customer: dict[int, int] = {}
     for breach in gen.data.sla_breaches:
-        breaches_by_customer[breach["_customer_index"]] = \
+        breaches_by_customer[breach["_customer_index"]] = (
             breaches_by_customer.get(breach["_customer_index"], 0) + 1
+        )
 
     months = [
         _add_months(date(DATA_END.year, DATA_END.month, 1), -offset)
@@ -629,14 +709,16 @@ def generate_health(gen: SyntheticGenerator) -> None:
             else:
                 band, churn_risk = "critical", round(rng.uniform(48, 85), 2)
 
-            gen.data.health.append({
-                "_customer_index": customer["_index"],
-                "tenant_id": customer["tenant_id"],
-                "snapshot_date": month_start,
-                "health_score": health,
-                "usage_score": round(usage_score, 2),
-                "support_score": round(support_score, 2),
-                "billing_score": round(billing_score, 2),
-                "risk_band": band,
-                "churn_risk_pct": churn_risk,
-            })
+            gen.data.health.append(
+                {
+                    "_customer_index": customer["_index"],
+                    "tenant_id": customer["tenant_id"],
+                    "snapshot_date": month_start,
+                    "health_score": health,
+                    "usage_score": round(usage_score, 2),
+                    "support_score": round(support_score, 2),
+                    "billing_score": round(billing_score, 2),
+                    "risk_band": band,
+                    "churn_risk_pct": churn_risk,
+                }
+            )

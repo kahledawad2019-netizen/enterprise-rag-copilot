@@ -140,9 +140,7 @@ def get_profile(name: ProfileName | str) -> ModelProfile:
         return PROFILES[ProfileName(name)]
     except ValueError as exc:
         valid = ", ".join(p.value for p in ProfileName)
-        raise ValueError(
-            f"Unknown model profile {name!r}. Valid profiles: {valid}"
-        ) from exc
+        raise ValueError(f"Unknown model profile {name!r}. Valid profiles: {valid}") from exc
 
 
 def recommend_profile(total_ram_gb: float, vram_gb: float) -> ProfileName:

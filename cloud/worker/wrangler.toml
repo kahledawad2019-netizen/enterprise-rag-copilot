@@ -16,10 +16,12 @@ ALLOWED_ORIGINS = "http://localhost:5173,https://copilot-ui.pages.dev"
 
 # The FastAPI container. Replace with your deployed URL.
 BACKEND_URL = "https://copilot-api.fly.dev"
+ENVIRONMENT = "production"
+AUTH_MODE = "required"
 
-# Cloudflare Access. Leave both unset until Zero Trust is configured; the
-# Worker then runs without authentication, which is correct for a first
-# smoke test and wrong for anything else.
+# Cloudflare Access. Production and staging fail closed while either value is
+# unset. For a local smoke test use `.dev.vars` with ENVIRONMENT=development
+# and AUTH_MODE=disabled; never weaken these deployed environments.
 # ACCESS_AUD = ""
 # ACCESS_TEAM_DOMAIN = "yourteam.cloudflareaccess.com"
 
@@ -55,6 +57,8 @@ name = "copilot-api-staging"
 [env.staging.vars]
 ALLOWED_ORIGINS = "http://localhost:5173,https://staging.copilot-ui.pages.dev"
 BACKEND_URL = "https://copilot-api-staging.fly.dev"
+ENVIRONMENT = "staging"
+AUTH_MODE = "required"
 
 [[env.staging.ratelimits]]
 name = "ASK_LIMITER"

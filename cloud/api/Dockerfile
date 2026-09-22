@@ -23,13 +23,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY cloud/api/requirements.txt .
+COPY cloud/api/requirements.lock.txt .
 
 # Installed into a virtualenv so the whole dependency tree can be copied to
 # the runtime stage as one directory.
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.lock.txt
 
 # ---------------------------------------------------------------------------
 # Stage 2 - runtime
@@ -76,6 +76,7 @@ WORKDIR /app
 # regenerable, and baking it in means a stale index ships with every image.
 COPY --chown=copilot:copilot local-enterprise-copilot/src/          local-enterprise-copilot/src/
 COPY --chown=copilot:copilot local-enterprise-copilot/data/documents/ local-enterprise-copilot/data/documents/
+COPY --chown=copilot:copilot local-enterprise-copilot/evals/baselines/ local-enterprise-copilot/evals/baselines/
 COPY --chown=copilot:copilot local-enterprise-copilot/sql/          local-enterprise-copilot/sql/
 COPY --chown=copilot:copilot cloud/api/                             cloud/api/
 
