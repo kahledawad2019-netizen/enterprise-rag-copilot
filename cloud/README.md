@@ -358,6 +358,23 @@ To skip the Worker entirely and drive the backend directly:
 cd cloud/ui && COPILOT_API=http://127.0.0.1:8000 BACKEND_TOKEN=dev-token npm run dev
 ```
 
+### One process at a time owns the index
+
+Embedded Qdrant permits a single client per storage folder. That has three
+consequences you will meet:
+
+- **Stop the backend before running the test suite.** Both want the same
+  folder, and the second one to ask gets "already accessed by another
+  instance of Qdrant client".
+- **The container runs one uvicorn worker.** A second worker in the same
+  container opens a second client and one of them silently gets nothing.
+  Scale with more containers.
+- **Anything reading the index inside the backend must borrow the copilot's
+  client**, not open its own. `/health` and `/meta` originally opened their
+  own and reported a healthy 130-chunk index as broken.
+
+`QDRANT_MODE=server` against a shared Qdrant removes all three.
+
 ### What has been verified locally, and what has not
 
 The Worker was run under `wrangler dev` and exercised:
