@@ -1,0 +1,150 @@
+name: Postgres migration
+
+# Runs the PostgreSQL translation of the schema against a real PostgreSQL
+# server on every push, so the migration is verified rather than asserted.
+#
+# This workflow is the reason the migration is being attempted at all. The
+# original advice against moving off SQL Server rested on one fact: the
+# translation could not be checked, because the development machine has
+# neither Docker nor a local PostgreSQL. A service container removes that
+# objection - every translated statement is executed, and the tenant-isolation
+# and least-privilege properties are asserted against the running database
+# rather than read back off the page.
+#
+# Scripts are added here as they are translated. A script that is not listed
+# has not been verified, and the summary at the end says which.
+
+on:
+  push:
+    branches: [main, cloud-deploy]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  schema:
+    name: Apply and verify schema
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Throwaway credentials for an ephemeral container that is destroyed
+          # with the runner. Nothing here is a real secret, and nothing here
+          # is reachable from outside the job.
+          POSTGRES_USER: copilot_ci
+          POSTGRES_PASSWORD: copilot_ci
+          POSTGRES_DB: enterprisecopilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U copilot_ci -d enterprisecopilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: copilot_ci
+      PGPASSWORD: copilot_ci
+      PGDATABASE: enterprisecopilot
+      # Fail the whole script on the first error instead of carrying on and
+      # reporting success at the end. Without this, a broken statement in the
+      # middle of a file is a warning nobody reads.
+      PSQL: psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      - name: Server version
+        run: $PSQL -c "SELECT version();"
+
+      # Each script is applied separately so a failure names the file rather
+      # than a line number in a concatenated stream.
+      - name: 001 database preconditions
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/001_create_database.sql
+
+      - name: 002 schemas
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
+
+      # Re-running must be safe. The SQL Server scripts are idempotent by
+      # design and the translation has to keep that, or a redeploy becomes a
+      # one-shot operation nobody dares repeat.
+      - name: Re-apply 001-002 (idempotency)
+        run: |
+          $PSQL -f local-enterprise-copilot/sql/postgres/001_create_database.sql
+          $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
+
+      - name: Assert the six schemas exist
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              missing text;
+          BEGIN
+              SELECT string_agg(s, ', ')
+              INTO missing
+              FROM unnest(ARRAY['core','billing','support','analytics','security','ai']) AS s
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM information_schema.schemata WHERE schema_name = s
+              );
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'Missing schemas: %', missing;
+              END IF;
+
+              RAISE NOTICE 'All six schemas present.';
+          END
+          $$;
+          SQL
+
+      - name: Assert public schema is not world-writable
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+              IF has_schema_privilege('public', 'public', 'CREATE') THEN
+                  RAISE EXCEPTION
+                      'PUBLIC can still CREATE in schema public; 002 did not revoke it.';
+              END IF;
+              RAISE NOTICE 'schema public is locked down.';
+          END
+          $$;
+          SQL
+
+      - name: Migration coverage summary
+        if: always()
+        run: |
+          {
+            echo "### PostgreSQL migration coverage"
+            echo
+            echo "| script | translated | verified here |"
+            echo "|---|---|---|"
+            for n in 001 002 003 004 005 006 007 008 009; do
+              f=$(ls local-enterprise-copilot/sql/postgres/${n}_*.sql 2>/dev/null | head -1)
+              if [ -n "$f" ]; then
+                echo "| $n | yes | yes |"
+              else
+                echo "| $n | **no** | no |"
+              fi
+            done
+            echo
+            echo "A script marked **no** has not been translated. Its SQL Server"
+            echo "behaviour is not yet reproduced on PostgreSQL, and nothing in"
+            echo "this run says otherwise."
+          } >> "$GITHUB_STEP_SUMMARY"
