@@ -487,6 +487,68 @@ def convert_date_functions(sql: str) -> str:
     return sql
 
 
+def convert_date_parts(sql: str) -> str:
+    """T-SQL date-part functions, which PostgreSQL spells with EXTRACT.
+
+        YEAR(x)                -> EXTRACT(YEAR FROM x)::int
+        MONTH(x)               -> EXTRACT(MONTH FROM x)::int
+        DAY(x)                 -> EXTRACT(DAY FROM x)::int
+        DATEPART(unit, x)      -> EXTRACT(unit FROM x)::int
+        DATEFROMPARTS(y, m, d) -> MAKE_DATE(y, m, d)
+        EOMONTH(x)             -> (date_trunc('month', x) + INTERVAL '1 month -1 day')::date
+
+    The ::int casts matter. EXTRACT returns numeric in PostgreSQL, and
+    MAKE_DATE takes integers, so DATEFROMPARTS(YEAR(...), MONTH(...), 1)
+    fails on the argument types without them. T-SQL's YEAR() returns int, so
+    casting also keeps the expression's type the same across dialects rather
+    than quietly widening it to numeric wherever the result is used.
+
+    Found all at once by grepping the translated output for T-SQL scalar
+    functions, rather than one per CI run: the server reports the first
+    failure and stops, so a file with five unknown functions takes five
+    round trips unless you go looking.
+    """
+    def extract(unit: str):
+        def build(args: list[str]) -> str | None:
+            if len(args) != 1:
+                return None
+            return f"EXTRACT({unit} FROM {args[0]})::int"
+        return build
+
+    for name in ("YEAR", "MONTH", "DAY"):
+        sql = _rewrite_calls(sql, name, extract(name))
+
+    def datepart(args: list[str]) -> str | None:
+        if len(args) != 2:
+            return None
+        unit = args[0].strip().strip("'\"").upper()
+        if not re.fullmatch(r"[A-Z]+", unit):
+            return None
+        return f"EXTRACT({unit} FROM {args[1]})::int"
+
+    sql = _rewrite_calls(sql, "DATEPART", datepart)
+
+    def datefromparts(args: list[str]) -> str | None:
+        if len(args) != 3:
+            return None
+        return f"MAKE_DATE({args[0]}, {args[1]}, {args[2]})"
+
+    sql = _rewrite_calls(sql, "DATEFROMPARTS", datefromparts)
+
+    def eomonth(args: list[str]) -> str | None:
+        # T-SQL's optional month-offset argument is not used in these scripts;
+        # refusing it is better than guessing at the arithmetic.
+        if len(args) != 1:
+            return None
+        return (
+            f"(date_trunc('month', ({args[0]})::timestamp) "
+            f"+ INTERVAL '1 month' - INTERVAL '1 day')::date"
+        )
+
+    sql = _rewrite_calls(sql, "EOMONTH", eomonth)
+    return sql
+
+
 def convert_apply(sql: str) -> str:
     """APPLY -> LATERAL.
 
@@ -524,6 +586,7 @@ def translate(sql: str) -> str:
         drop_default_constraint_names,
         convert_builtins,
         convert_create_or_alter,
+        convert_date_parts,
         convert_top,
         convert_index_syntax,
         convert_date_functions,

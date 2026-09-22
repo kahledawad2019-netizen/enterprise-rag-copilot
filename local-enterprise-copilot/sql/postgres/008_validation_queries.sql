@@ -186,7 +186,7 @@ FROM core.subscription_changes WHERE change_type IN ('upgrade', 'downgrade')
 UNION ALL
 SELECT 'edge.timezone_boundary_tickets', '>= 50', CAST(COUNT(*) AS varchar(20)),
        CASE WHEN COUNT(*) >= 50 THEN 'PASS' ELSE 'FAIL' END
-FROM support.tickets WHERE DATEPART(HOUR, opened_at_utc) = 23
+FROM support.tickets WHERE EXTRACT(HOUR FROM opened_at_utc)::int = 23
 UNION ALL
 SELECT 'edge.multi_currency_present', '>= 2', CAST(COUNT(DISTINCT billing_currency) AS varchar(20)),
        CASE WHEN COUNT(DISTINCT billing_currency) >= 2 THEN 'PASS' ELSE 'FAIL' END

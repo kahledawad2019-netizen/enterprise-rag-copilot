@@ -40,8 +40,8 @@ CREATE OR REPLACE VIEW analytics.vw_month_spine
 AS
 WITH bounds AS (
     SELECT
-        DATEFROMPARTS(YEAR(MIN(started_on)), MONTH(MIN(started_on)), 1) AS first_month,
-        DATEFROMPARTS(YEAR(MAX(bound_date)), MONTH(MAX(bound_date)), 1)  AS last_month
+        MAKE_DATE(EXTRACT(YEAR FROM MIN(started_on))::int, EXTRACT(MONTH FROM MIN(started_on))::int, 1) AS first_month,
+        MAKE_DATE(EXTRACT(YEAR FROM MAX(bound_date))::int, EXTRACT(MONTH FROM MAX(bound_date))::int, 1)  AS last_month
     FROM (
         SELECT started_on, COALESCE(ended_on, CAST((NOW() AT TIME ZONE 'utc') AS date)) AS bound_date
         FROM core.subscriptions
@@ -56,10 +56,10 @@ months AS (
 )
 SELECT
     month_start,
-    EOMONTH(month_start)                    AS month_end,
-    YEAR(month_start)                       AS calendar_year,
-    MONTH(month_start)                      AS calendar_month,
-    CONCAT(YEAR(month_start), '-Q', DATEPART(QUARTER, month_start)) AS calendar_quarter
+    (date_trunc('month', (month_start)::timestamp) + INTERVAL '1 month' - INTERVAL '1 day')::date                    AS month_end,
+    EXTRACT(YEAR FROM month_start)::int                       AS calendar_year,
+    EXTRACT(MONTH FROM month_start)::int                      AS calendar_month,
+    CONCAT(EXTRACT(YEAR FROM month_start)::int, '-Q', EXTRACT(QUARTER FROM month_start)::int) AS calendar_quarter
 FROM months;
 
 /* ---------------------------------------------------------------------------

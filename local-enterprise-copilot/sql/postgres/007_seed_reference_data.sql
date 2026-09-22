@@ -416,7 +416,7 @@ ORDER BY month_start DESC, tenant_name;',
  'SELECT month_start, churned_customers, customers_at_start, churned_mrr,
        contraction_mrr, expansion_mrr, new_business_mrr
 FROM analytics.vw_churn_metrics
-WHERE calendar_quarter = CONCAT(YEAR(month_start), ''-Q2'')
+WHERE calendar_quarter = CONCAT(EXTRACT(YEAR FROM month_start)::int, ''-Q2'')
 ORDER BY month_start;',
  'churn', 'analytics.vw_churn_metrics', 'Revenue churn, Logo churn, Contraction revenue',
  'Revenue Operations', '2025-06-01',
