@@ -156,6 +156,21 @@ def convert_boolean_defaults(sql: str) -> str:
     )
 
 
+def convert_boolean_casts(sql: str) -> str:
+    """CAST(0/1 AS BOOLEAN) -> FALSE/TRUE.
+
+    SQL Server accepts integer-to-BIT casts while PostgreSQL deliberately has
+    no integer-to-BOOLEAN cast. Explicit casts in portable seed projections
+    therefore need to become literals after BIT has been renamed BOOLEAN.
+    """
+    return re.sub(
+        r"\bCAST\s*\(\s*([01])\s+AS\s+BOOLEAN\s*\)",
+        lambda match: "TRUE" if match.group(1) == "1" else "FALSE",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def drop_default_constraint_names(sql: str) -> str:
     """CONSTRAINT DF_x DEFAULT (...) -> DEFAULT (...).
 
@@ -572,6 +587,53 @@ def boolean_columns(schema_sql: str) -> set[str]:
     }
 
 
+def date_columns(schema_sql: str) -> set[str]:
+    """Column names declared DATE, read from the translated DDL."""
+    return {
+        match.group(1).lower()
+        for match in re.finditer(
+            r"^\s+([A-Za-z_]\w*)\s+DATE\b", schema_sql, re.IGNORECASE | re.MULTILINE
+        )
+    }
+
+
+def convert_values_alias_types(
+    sql: str,
+    dates: set[str],
+    booleans: set[str],
+) -> str:
+    """Type VALUES-table projections that PostgreSQL cannot infer from INSERT.
+
+    Seed scripts use ``FROM (VALUES ...) AS v(columns...)``. PostgreSQL first
+    resolves each VALUES column independently, so ISO date strings become TEXT
+    and 0/1 flags become INTEGER before the outer INSERT target can provide a
+    type. SQL Server coerces those values from the destination column instead.
+
+    The translated table DDL is the source of truth for which names are DATE
+    or BOOLEAN. Casting references from the conventional ``v`` seed alias
+    keeps the original VALUES formatting and comments intact.
+    """
+    if dates:
+        names = "|".join(sorted(re.escape(column) for column in dates))
+        sql = re.sub(
+            rf"\bv\.({names})\b",
+            r"CAST(v.\1 AS DATE)",
+            sql,
+            flags=re.IGNORECASE,
+        )
+
+    if booleans:
+        names = "|".join(sorted(re.escape(column) for column in booleans))
+        sql = re.sub(
+            rf"\bv\.({names})\b",
+            r"(v.\1 <> 0)",
+            sql,
+            flags=re.IGNORECASE,
+        )
+
+    return sql
+
+
 def convert_boolean_comparisons(sql: str, columns: set[str]) -> str:
     """`is_trial = 0` -> `is_trial = FALSE`, for BOOLEAN columns only.
 
@@ -714,7 +776,11 @@ def tidy(sql: str) -> str:
     return re.sub(r"\n{4,}", "\n\n\n", sql).strip() + "\n"
 
 
-def translate(sql: str, boolean_cols: set[str] | None = None) -> str:
+def translate(
+    sql: str,
+    boolean_cols: set[str] | None = None,
+    date_cols: set[str] | None = None,
+) -> str:
     for step in (
         strip_batches,
         drop_unicode_prefix,
@@ -722,6 +788,7 @@ def translate(sql: str, boolean_cols: set[str] | None = None) -> str:
         convert_types,
         convert_identity,
         convert_boolean_defaults,
+        convert_boolean_casts,
         drop_default_constraint_names,
         convert_builtins,
         convert_create_or_alter,
@@ -741,6 +808,9 @@ def translate(sql: str, boolean_cols: set[str] | None = None) -> str:
     # pipeline above.
     if boolean_cols:
         sql = convert_boolean_comparisons(sql, boolean_cols)
+
+    if boolean_cols or date_cols:
+        sql = convert_values_alias_types(sql, date_cols or set(), boolean_cols or set())
 
     return tidy(sql)
 
@@ -784,16 +854,20 @@ def main() -> int:
     # names those are.
     tables = source_dir / "003_create_tables.sql"
     boolean_cols: set[str] = set()
+    date_cols: set[str] = set()
     if tables.exists():
-        boolean_cols = boolean_columns(translate(tables.read_text(encoding="utf-8")))
+        translated_tables = translate(tables.read_text(encoding="utf-8"))
+        boolean_cols = boolean_columns(translated_tables)
+        date_cols = date_columns(translated_tables)
         print(f"boolean columns discovered: {len(boolean_cols)}")
+        print(f"date columns discovered: {len(date_cols)}")
 
     for path in files:
         if path.name in HAND_TRANSLATED:
             print(f"skip  {path.name}  (hand-translated: semantics differ)")
             continue
         translated = HEADER.format(name=path.name) + translate(
-            path.read_text(encoding="utf-8"), boolean_cols
+            path.read_text(encoding="utf-8"), boolean_cols, date_cols
         )
         target = args.out / path.name
         target.write_text(translated, encoding="utf-8")

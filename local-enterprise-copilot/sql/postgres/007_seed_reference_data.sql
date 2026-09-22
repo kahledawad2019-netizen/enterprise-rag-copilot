@@ -43,7 +43,7 @@ WHERE NOT EXISTS (SELECT 1 FROM core.tenants t WHERE t.tenant_code = v.tenant_co
    Products - five SaaS products across three families.
    --------------------------------------------------------------------------- */
 INSERT INTO core.products (product_code, product_name, product_family, description, launched_on)
-SELECT v.product_code, v.product_name, v.product_family, v.description, v.launched_on
+SELECT v.product_code, v.product_name, v.product_family, v.description, CAST(v.launched_on AS DATE)
 FROM (VALUES
     ('NW-ANALYTICS', 'Northwind Analytics',  'Data',
      'Self-service BI and dashboards for operational teams.',            '2021-03-01'),
@@ -70,7 +70,7 @@ INSERT INTO core.plans
     (product_id, plan_code, plan_name, tier, billing_interval,
      list_price_monthly, currency_code, seats_included, effective_from)
 SELECT p.product_id, v.plan_code, v.plan_name, v.tier, v.billing_interval,
-       v.list_price_monthly, 'USD', v.seats_included, v.effective_from
+       v.list_price_monthly, 'USD', v.seats_included, CAST(v.effective_from AS DATE)
 FROM (VALUES
     -- Analytics
     ('NW-ANALYTICS','ANL-START-M', 'Analytics Starter (Monthly)',      'Starter',     'monthly',   99.0000,  5, '2021-03-01'),
@@ -114,7 +114,7 @@ INSERT INTO support.sla_policies
     (policy_code, plan_tier, priority, first_response_minutes, resolution_minutes,
      coverage_hours, uptime_target_pct, version, effective_from, effective_to, is_current)
 SELECT v.policy_code, v.plan_tier, v.priority, v.first_response_minutes, v.resolution_minutes,
-       v.coverage_hours, v.uptime_target_pct, v.version, v.effective_from, v.effective_to, v.is_current
+       v.coverage_hours, v.uptime_target_pct, v.version, CAST(v.effective_from AS DATE), CAST(v.effective_to AS DATE), (v.is_current <> 0)
 FROM (VALUES
     -- ---- v1.0 : in force 2020-06-01 .. 2024-12-31 ----
     ('SLA-ENT-P1','Enterprise',  'P1',   30,   240,'24x7',           99.90,'1.0','2020-06-01','2024-12-31',0),
@@ -170,7 +170,7 @@ WHERE NOT EXISTS (SELECT 1 FROM security.access_groups g WHERE g.group_code = v.
    and proven to fail.
    --------------------------------------------------------------------------- */
 INSERT INTO security.app_users (user_name, display_name, tenant_id, access_groups, is_admin)
-SELECT v.user_name, v.display_name, t.tenant_id, v.access_groups, v.is_admin
+SELECT v.user_name, v.display_name, t.tenant_id, v.access_groups, (v.is_admin <> 0)
 FROM (VALUES
     ('admin',      'Platform Administrator', 'NWC-NA',  'public,internal,finance,support,security,exec', 1),
     ('analyst_na', 'Revenue Analyst (NA)',   'NWC-NA',  'public,internal,finance',                       0),
@@ -197,8 +197,9 @@ DO $$ BEGIN RAISE NOTICE '007: tenants, products, plans, SLA policies, access gr
 INSERT INTO ai.business_glossary
     (term, definition, sql_guidance, owner, version, effective_date,
      related_tables, related_columns, example_calculation, known_exclusions, is_current)
-SELECT v.term, v.definition, v.sql_guidance, v.owner, v.version, v.effective_date,
-       v.related_tables, v.related_columns, v.example_calculation, v.known_exclusions, 1
+SELECT v.term, v.definition, v.sql_guidance, v.owner, v.version, CAST(v.effective_date AS DATE),
+       v.related_tables, v.related_columns, v.example_calculation, v.known_exclusions,
+       TRUE
 FROM (VALUES
 ('MRR',
  'Monthly Recurring Revenue. The normalised monthly value of all paid, non-trial subscriptions that were active at any point during the month. Annual contracts are divided across the twelve months they cover rather than recognised in the month they are billed.',
@@ -326,7 +327,7 @@ FROM (VALUES
 
 ('First-response time',
  'Elapsed minutes between ticket open and the first agent response. Measured in UTC.',
- '((EXTRACT(EPOCH FROM ((tickets.first_response_at_utc) - (tickets.opened_at_utc))) / 60))::int. NULL first_response_at_utc means no response was ever given; treat that as a breach, not as zero.',
+ '((EXTRACT(EPOCH FROM (CAST((tickets.first_response_at_utc) AS TIMESTAMP) - CAST((tickets.opened_at_utc) AS TIMESTAMP))) / 60))::int. NULL first_response_at_utc means no response was ever given; treat that as a breach, not as zero.',
  'Support Operations', '1.0', '2023-01-01',
  'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.first_response_at_utc',
  'SELECT AVG(CAST(actual_first_response_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_first_response_minutes IS NOT NULL;',
@@ -334,7 +335,7 @@ FROM (VALUES
 
 ('Resolution time',
  'Elapsed minutes between ticket open and resolution. A ticket that is closed without being resolved has no resolution time.',
- '((EXTRACT(EPOCH FROM ((tickets.resolved_at_utc) - (tickets.opened_at_utc))) / 60))::int. Exclude rows where resolved_at_utc IS NULL rather than treating them as zero.',
+ '((EXTRACT(EPOCH FROM (CAST((tickets.resolved_at_utc) AS TIMESTAMP) - CAST((tickets.opened_at_utc) AS TIMESTAMP))) / 60))::int. Exclude rows where resolved_at_utc IS NULL rather than treating them as zero.',
  'Support Operations', '1.0', '2023-01-01',
  'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.resolved_at_utc',
  'SELECT AVG(CAST(actual_resolution_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_resolution_minutes IS NOT NULL;',
@@ -375,7 +376,7 @@ SELECT 'MRR',
        'core.subscriptions', 'subscriptions.mrr_amount',
        'Superseded by v2.0 on 2025-01-01.',
        'This version did NOT exclude trials, which overstated MRR by roughly 4 percent.',
-       0
+       FALSE
 WHERE NOT EXISTS (
     SELECT 1 FROM ai.business_glossary g WHERE g.term = 'MRR' AND g.version = '1.0'
 );
@@ -391,7 +392,7 @@ DO $$ BEGIN RAISE NOTICE '007: business glossary seeded.'; END $$;
 INSERT INTO ai.approved_sql_examples
     (question, sql_text, category, tables_used, glossary_terms, verified_by, verified_on, notes)
 SELECT v.question, v.sql_text, v.category, v.tables_used, v.glossary_terms,
-       v.verified_by, v.verified_on, v.notes
+       v.verified_by, CAST(v.verified_on AS DATE), v.notes
 FROM (VALUES
 ('Which five customers have the highest ARR?',
  'SELECT customer_name, current_arr, segment, region

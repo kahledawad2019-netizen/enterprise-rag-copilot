@@ -66,3 +66,24 @@ def test_convert_datediff_accepts_date_or_timestamp_operands() -> None:
     assert "CAST((c.signup_date) AS TIMESTAMP)" in result
     assert "EXTRACT(EPOCH FROM" in result
     assert "/ 86400" in result
+
+
+def test_convert_values_alias_types_uses_schema_derived_types() -> None:
+    source = """\
+SELECT v.effective_date, v.is_current
+FROM (VALUES ('2025-01-01', 1)) AS v(effective_date, is_current);
+"""
+
+    result = TRANSLATOR.convert_values_alias_types(
+        source,
+        dates={"effective_date"},
+        booleans={"is_current"},
+    )
+
+    assert "SELECT CAST(v.effective_date AS DATE), (v.is_current <> 0)" in result
+    assert "AS v(effective_date, is_current)" in result
+
+
+def test_convert_boolean_casts_maps_sql_server_bit_literals() -> None:
+    assert TRANSLATOR.convert_boolean_casts("CAST(1 AS BOOLEAN)") == "TRUE"
+    assert TRANSLATOR.convert_boolean_casts("cast(0 as boolean)") == "FALSE"
