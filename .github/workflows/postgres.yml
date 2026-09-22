@@ -170,25 +170,72 @@ jobs:
 
       # A CHECK constraint that vanished in translation is a data-integrity
       # rule that stopped existing without anyone noticing.
+      #
+      # The match is case-insensitive, and that is a finding rather than a
+      # convenience. PostgreSQL folds unquoted identifiers to lower case, so
+      # `CONSTRAINT CK_customers_status` is stored as `ck_customers_status`.
+      # The first version of this assertion looked for 'CK\_%' and found
+      # exactly zero - the constraints were all there, under different names.
+      # Anything that asserts on an exact constraint name across both dialects
+      # has to account for that.
       - name: Assert CHECK constraints survived
         run: |
           $PSQL -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
           DECLARE
-              n int;
+              named int;
+              sample text;
           BEGIN
-              SELECT count(*) INTO n
+              SELECT count(*) INTO named
               FROM information_schema.table_constraints
               WHERE constraint_type = 'CHECK'
                 AND constraint_schema IN ('core','billing','support','analytics','ai','security')
-                AND constraint_name LIKE 'CK\_%';
+                AND lower(constraint_name) LIKE 'ck!_%' ESCAPE '!';
 
-              IF n < 20 THEN
+              IF named < 20 THEN
+                  SELECT string_agg(constraint_name, ', ')
+                  INTO sample
+                  FROM (
+                      SELECT constraint_name
+                      FROM information_schema.table_constraints
+                      WHERE constraint_type = 'CHECK'
+                        AND constraint_schema IN
+                            ('core','billing','support','analytics','ai','security')
+                      LIMIT 10
+                  ) AS s;
+
                   RAISE EXCEPTION
-                      'Only % named CHECK constraints found; the T-SQL schema defines 27.', n;
+                      'Only % named CK_ constraints found; the T-SQL schema defines 27. Sample of what is present: %',
+                      named, COALESCE(sample, '(none)');
               END IF;
 
-              RAISE NOTICE '% named CHECK constraints present.', n;
+              RAISE NOTICE '% named CK_ constraints present (lower-cased by PostgreSQL).', named;
+          END
+          $$;
+          SQL
+
+      # Identifier case folding, asserted rather than remembered. If a future
+      # translation starts quoting identifiers, names would stay upper case and
+      # anything matching on the lower-cased form would quietly stop matching.
+      - name: Assert identifier case folding is as expected
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              upper_named int;
+          BEGIN
+              SELECT count(*) INTO upper_named
+              FROM information_schema.table_constraints
+              WHERE constraint_schema IN ('core','billing','support','analytics','ai','security')
+                AND constraint_name <> lower(constraint_name);
+
+              IF upper_named > 0 THEN
+                  RAISE EXCEPTION
+                      '% constraint names are not lower case. The translation has started quoting identifiers, which changes how every name must be matched.',
+                      upper_named;
+              END IF;
+
+              RAISE NOTICE 'All constraint names are lower case, as PostgreSQL folds them.';
           END
           $$;
           SQL
