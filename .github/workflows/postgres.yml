@@ -112,6 +112,20 @@ jobs:
             $PSQL -f "$f"
           done
 
+      # The Neon runbook uses the Python migration command, not psql directly.
+      # Exercise that exact entrypoint against the same live PostgreSQL server
+      # so a DB-API multi-statement or configuration regression cannot leave a
+      # green schema and a broken deployment procedure.
+      - name: Verify Python PostgreSQL migration runner
+        env:
+          DATABASE_BACKEND: postgresql
+          POSTGRES_DSN: postgresql://copilot_ci:copilot_ci@localhost:5432/enterprisecopilot
+        run: |
+          python -m pip install --quiet "pydantic>=2.9,<3" "pydantic-settings>=2.6,<3" \
+            "python-dotenv>=1.0" "psycopg[binary]>=3.2,<4"
+          cd local-enterprise-copilot
+          PYTHONPATH=src python scripts/setup_database.py
+
       # The glossary and the approved SQL examples are not schema - they are
       # the text the model is prompted with. If they still contain T-SQL while
       # the database is PostgreSQL, the model is being taught to write queries
