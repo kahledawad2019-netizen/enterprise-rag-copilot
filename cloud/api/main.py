@@ -326,17 +326,49 @@ def health() -> HealthResponse:
     except Exception as exc:
         checks.append(HealthCheck(name="database", ok=False, detail=_short(exc)))
 
-    # Chat model
+    # Chat model. Which provider is in play decides what "reachable" means,
+    # so probe accordingly rather than always asking Ollama - a container
+    # configured for Groq has no Ollama, and reporting that as a failure would
+    # mark a perfectly healthy deployment degraded.
     try:
-        import ollama
+        from enterprise_copilot.llm import build_chat_client, describe_providers
 
-        client = ollama.Client(host=settings.ollama.host)
-        models = [m.get("model", "") for m in client.list().get("models", [])]
-        checks.append(
-            HealthCheck(name="chat_model", ok=bool(models), detail=f"{len(models)} models available")
-        )
+        providers = describe_providers(settings)
+        if settings.llm.provider == "ollama":
+            client = build_chat_client(settings)
+            models = [m.get("model", "") for m in client.list().get("models", [])]
+            detail = f"ollama, {len(models)} models available"
+            ok = bool(models)
+        else:
+            # Constructing validates the key and model without spending a
+            # token. A real generation on every health check would be billed
+            # once per probe, forever.
+            build_chat_client(settings)
+            detail = f"{providers['chat_provider']} configured, model {providers['chat_model']}"
+            ok = True
+        checks.append(HealthCheck(name="chat_model", ok=ok, detail=detail))
     except Exception as exc:
         checks.append(HealthCheck(name="chat_model", ok=False, detail=_short(exc)))
+
+    # Whether anything leaves the machine. Not a failure - a disclosure, so an
+    # operator can see the posture without reading the container's env.
+    try:
+        from enterprise_copilot.llm import describe_providers
+
+        posture = describe_providers(settings)
+        checks.append(
+            HealthCheck(
+                name="data_locality",
+                ok=True,
+                detail=(
+                    f"chat={posture['chat_provider']}, "
+                    f"embeddings={posture['embedding_provider']}, "
+                    f"leaves machine: {posture['leaves_machine']}"
+                ),
+            )
+        )
+    except Exception as exc:
+        checks.append(HealthCheck(name="data_locality", ok=False, detail=_short(exc)))
 
     if all(c.ok for c in checks):
         status: Literal["ok", "degraded", "down"] = "ok"

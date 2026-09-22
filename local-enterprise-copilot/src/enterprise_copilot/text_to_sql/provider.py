@@ -131,11 +131,9 @@ class TextToSQLProvider(ABC):
         from .native import REPAIR_PROMPT, SYSTEM_PROMPT, extract_sql
 
         try:
-            import ollama
+            from ..llm import build_chat_client
 
-            client = ollama.Client(
-                self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-            )
+            client = build_chat_client(self.settings)
             response = client.chat(
                 model=self.settings.chat_model,
                 messages=[

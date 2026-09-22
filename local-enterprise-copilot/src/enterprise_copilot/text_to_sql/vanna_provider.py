@@ -233,11 +233,9 @@ class VannaTextToSQLProvider(TextToSQLProvider):
 
     # -- explanation -------------------------------------------------------
     def explain_result(self, question: str, result: QueryResult) -> str:
-        import ollama
+        from ..llm import build_chat_client
 
-        client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        client = build_chat_client(self.settings)
         try:
             response = client.chat(
                 model=self.settings.chat_model,

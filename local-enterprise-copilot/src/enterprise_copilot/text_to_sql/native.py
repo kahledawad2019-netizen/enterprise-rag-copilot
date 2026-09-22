@@ -102,11 +102,9 @@ class NativeTextToSQLProvider(TextToSQLProvider):
 
     def __init__(self, settings: Settings | None = None, **kwargs) -> None:
         super().__init__(settings or get_settings(), **kwargs)
-        import ollama
+        from ..llm import build_chat_client
 
-        self._client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        self._client = build_chat_client(self.settings)
 
     # -- generation --------------------------------------------------------
     def generate_query(self, request: SQLRequest) -> GeneratedSQL:

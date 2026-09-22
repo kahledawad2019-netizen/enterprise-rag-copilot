@@ -147,6 +147,102 @@ class OllamaSettings(BaseSettings):
     embedding_model: str | None = None
 
 
+class LLMSettings(BaseSettings):
+    """Where chat generation happens: routing, SQL, and answers.
+
+    The project was built against a local Ollama and that is still the
+    default. `provider="openai"` points it at any OpenAI-compatible endpoint -
+    Groq, OpenRouter, Together, DeepSeek, vLLM, Azure OpenAI - which is what
+    makes a container without a GPU possible at all.
+
+    Switching provider does NOT change any safety property. Generated SQL
+    still goes through SQLGuard and ReadOnlyRunner; a hosted model is exactly
+    as untrusted as a local one.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_prefix="LLM_", extra="ignore",
+        env_file_encoding="utf-8", case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    provider: Literal["ollama", "openai"] = "ollama"
+
+    # OpenAI-compatible endpoint. Groq is https://api.groq.com/openai/v1
+    base_url: str = "https://api.groq.com/openai/v1"
+    api_key: SecretStr | None = None
+
+    # Blank means "use the profile's model", which is right for Ollama and
+    # wrong for a hosted API, where the name is provider-specific.
+    model: str = ""
+
+    timeout_seconds: float = 120.0
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.provider != "ollama"
+
+
+class EmbeddingSettings(BaseSettings):
+    """Where text becomes vectors.
+
+    Kept separate from LLMSettings because the two genuinely come apart:
+    Groq has no embeddings endpoint, and Anthropic has none either. The
+    common deployment is therefore a hosted chat model plus embeddings from
+    somewhere else entirely.
+
+    **Changing `provider` or `model` invalidates the index.** A different
+    model produces different vectors for the same text, so the existing
+    collection becomes meaningless rather than merely stale - and it fails
+    silently, by returning confident nonsense. Bump QDRANT_INDEX_VERSION and
+    re-run scripts/build_index.py --rebuild whenever this section changes.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_prefix="EMBEDDING_", extra="ignore",
+        env_file_encoding="utf-8", case_sensitive=False,
+        protected_namespaces=(),
+    )
+
+    provider: Literal["ollama", "openai", "cloudflare"] = "ollama"
+
+    # --- OpenAI-compatible ---
+    base_url: str = "https://api.openai.com/v1"
+    api_key: SecretStr | None = None
+
+    # --- Cloudflare Workers AI ---
+    # bge-m3 is 1024-dimensional, the same as the local qwen3-embedding the
+    # index was built with, so the collection's vector size does not change.
+    # The vectors still do, so a rebuild is still required.
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: SecretStr | None = None
+
+    # Blank means the profile's model (Ollama). Set explicitly otherwise:
+    #   cloudflare  @cf/baai/bge-m3
+    #   openai      text-embedding-3-small
+    model: str = ""
+
+    timeout_seconds: float = 120.0
+
+    @field_validator("api_key", "cloudflare_api_token", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def is_hosted(self) -> bool:
+        return self.provider != "ollama"
+
+
 class VannaCloudSettings(BaseSettings):
     """Vanna Cloud (ask.vanna.ai) configuration.
 
@@ -358,6 +454,8 @@ class Settings(BaseSettings):
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     vanna_cloud: VannaCloudSettings = Field(default_factory=VannaCloudSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
@@ -371,11 +469,22 @@ class Settings(BaseSettings):
 
     @property
     def chat_model(self) -> str:
-        """Explicit env override wins over the profile default."""
+        """The model name to send, whichever provider is in use.
+
+        Precedence: the LLM section's explicit model, then the Ollama
+        override, then the profile. A hosted provider must name its own model
+        - the profile's `llama3.1:8b` is an Ollama tag and means nothing to
+        Groq - so an unset model on a hosted provider is a configuration
+        error, raised by `build_chat_client` rather than guessed at here.
+        """
+        if self.llm.model:
+            return self.llm.model
         return self.ollama.chat_model or self.profile.chat_model
 
     @property
     def embedding_model(self) -> str:
+        if self.embeddings.model:
+            return self.embeddings.model
         return self.ollama.embedding_model or self.profile.embedding_model
 
     def ensure_directories(self) -> None:

@@ -233,11 +233,10 @@ class LLMIntentScreen:
     # -- internals ---------------------------------------------------------
     def _ask(self, question: str) -> dict:
         if self._client is None:
-            import ollama
+            from ..llm import build_chat_client
 
-            self._client = ollama.Client(
-                self.settings.ollama.host,
-                timeout=self.settings.security.intent_timeout_seconds,
+            self._client = build_chat_client(
+                self.settings, timeout=self.settings.security.intent_timeout_seconds
             )
 
         response = self._client.chat(

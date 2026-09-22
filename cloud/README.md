@@ -39,9 +39,15 @@ container behind it.
  └───┬──────────┬───────┘
      │          │
      ▼          ▼
-  Azure SQL  Vanna Cloud          (see docs/vanna_cloud.md before enabling)
-  (free)     text-to-SQL
+  Azure SQL  Vanna Cloud   Groq        Cloudflare
+  (free)     text-to-SQL  chat        Workers AI
+                                      embeddings
 ```
+
+The container has no GPU, so Ollama is not available to it. Chat goes to Groq
+and embeddings to Cloudflare Workers AI - see
+[docs/hosted_models.md](../local-enterprise-copilot/docs/hosted_models.md),
+which also covers what that discloses and what it does not.
 
 ### Why Azure SQL and not Postgres
 
@@ -88,10 +94,10 @@ URL, and the bearer token is what keeps it private — which is why
 - Build the image and run it once. The Dockerfile has never been built,
   because there is no Docker here.
 - Provision Azure SQL and run `sql/001`–`008` against it.
-- Decide how the container generates text. It has no GPU, so Ollama is not
-  available to it: either `VANNA_MODE=cloud` for SQL generation plus a hosted
-  model for answers and embeddings, or point `OLLAMA_HOST` at a machine that
-  has one.
+- Rebuild the vector index against the new embedding model and re-run the
+  evaluation. Changing the embedder invalidates the index *silently* - the
+  vectors stop meaning anything but still return a confident top-8 - and the
+  published NDCG figures stop describing the system.
 
 ---
 
@@ -211,7 +217,7 @@ fly launch --no-deploy --name copilot-api
 ```
 
 ```bash
-fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" MSSQL_SERVER="yourserver.database.windows.net" MSSQL_DATABASE="EnterpriseCopilot" MSSQL_AUTH_MODE=sql MSSQL_USERNAME="copilot_app" MSSQL_PASSWORD="..." MSSQL_TRUST_SERVER_CERTIFICATE=false VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud
+fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" MSSQL_SERVER="yourserver.database.windows.net" MSSQL_DATABASE="EnterpriseCopilot" MSSQL_AUTH_MODE=sql MSSQL_USERNAME="copilot_app" MSSQL_PASSWORD="..." MSSQL_TRUST_SERVER_CERTIFICATE=false VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud LLM_PROVIDER=openai LLM_BASE_URL="https://api.groq.com/openai/v1" LLM_API_KEY="gsk_..." LLM_MODEL=llama-3.3-70b-versatile EMBEDDING_PROVIDER=cloudflare EMBEDDING_MODEL=@cf/baai/bge-m3 EMBEDDING_CLOUDFLARE_ACCOUNT_ID="..." EMBEDDING_CLOUDFLARE_API_TOKEN="..."
 ```
 
 ```bash
@@ -295,6 +301,8 @@ Nothing in this table belongs in a file that git can see.
 |---|---|---|---|
 | `BACKEND_TOKEN` | Worker **and** container | `wrangler secret put` / `fly secrets set` | The shared secret that keeps the container private. Must match on both sides. |
 | `MSSQL_PASSWORD` | Container | `fly secrets set` | Password for the read-only `copilot_app` user. |
+| `LLM_API_KEY` | Container | `fly secrets set` | Groq key (`gsk_...`). The container has no GPU, so this is not optional. |
+| `EMBEDDING_CLOUDFLARE_API_TOKEN` | Container | `fly secrets set` | Workers AI token, **Workers AI: Read** permission. |
 | `MSSQL_SERVER`, `MSSQL_DATABASE`, `MSSQL_USERNAME` | Container | `fly secrets set` | Not secret, but set the same way so the connection is configured in one place. |
 | `VANNA_API_KEY` | Container | `fly secrets set` | Vanna Cloud key. Omit to stay local. |
 | `ACCESS_AUD` | Worker (`vars`) | `wrangler.toml` | Not secret — an identifier. |

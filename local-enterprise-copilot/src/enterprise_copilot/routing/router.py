@@ -329,11 +329,9 @@ class QueryRouter:
     ) -> RoutingDecision | None:
         try:
             if self._client is None:
-                import ollama
+                from ..llm import build_chat_client
 
-                self._client = ollama.Client(
-                    self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-                )
+                self._client = build_chat_client(self.settings)
 
             response = self._client.chat(
                 model=self.settings.chat_model,

@@ -71,11 +71,9 @@ class OllamaEmbedder:
         self.stats = EmbeddingStats()
         self._dimension: int | None = None
 
-        import ollama
+        from ..llm import build_embedding_client
 
-        self._client = ollama.Client(
-            self.settings.ollama.host, timeout=self.settings.ollama.timeout_seconds
-        )
+        self._client = build_embedding_client(self.settings)
 
     # -- dimension ---------------------------------------------------------
     @property
