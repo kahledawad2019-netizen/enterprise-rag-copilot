@@ -92,6 +92,10 @@ protobuf==7.36.2
     #   googleapis-common-protos
     #   opentelemetry-proto
     #   qdrant-client
+psycopg==3.3.6
+    # via -r cloud/api/requirements.txt
+psycopg-binary==3.3.6 ; implementation_name != 'pypy'
+    # via psycopg
 pydantic==2.13.5
     # via
     #   -r cloud/api/requirements.txt
@@ -102,8 +106,6 @@ pydantic==2.13.5
 pydantic-core==2.46.5
     # via pydantic
 pydantic-settings==2.15.0
-    # via -r cloud/api/requirements.txt
-pyodbc==5.3.0
     # via -r cloud/api/requirements.txt
 pypdf==6.19.0
     # via -r cloud/api/requirements.txt
@@ -160,7 +162,9 @@ typing-inspection==0.4.4
     #   pydantic
     #   pydantic-settings
 tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
-    # via pandas
+    # via
+    #   pandas
+    #   psycopg
 urllib3==2.8.0
     # via
     #   qdrant-client

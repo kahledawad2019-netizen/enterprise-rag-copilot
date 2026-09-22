@@ -51,9 +51,6 @@ from .tenant_injection import (
 
 log = logging.getLogger(__name__)
 
-DIALECT = "tsql"
-
-
 class Violation(StrEnum):
     PARSE_ERROR = "parse_error"
     NOT_A_SELECT = "not_a_select"
@@ -151,6 +148,7 @@ class SQLGuard:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.security = self.settings.security
+        self.dialect = self.settings.sql_dialect
 
     # -- main entry point --------------------------------------------------
     def validate(
@@ -170,12 +168,12 @@ class SQLGuard:
 
         # ---- 1. parse ----
         try:
-            statements = sqlglot.parse(sql, read=DIALECT)
+            statements = sqlglot.parse(sql, read=self.dialect)
         except Exception as exc:
             result.violations.append(
                 (
                     Violation.PARSE_ERROR,
-                    f"could not be parsed as T-SQL: {str(exc)[:200]}",
+                    f"could not be parsed as {self.dialect}: {str(exc)[:200]}",
                 )
             )
             return result
@@ -275,7 +273,7 @@ class SQLGuard:
         # Never trust the rewriter merely because it returned an AST.  Prove
         # the same invariant again on the rewritten tree before removing the
         # original violation.
-        post_check = ValidationResult(is_safe=False, sql=rewritten.sql(dialect=DIALECT))
+        post_check = ValidationResult(is_safe=False, sql=rewritten.sql(dialect=self.dialect))
         self._check_tenant(rewritten, post_check, tenant_id)
         if post_check.violations:
             log.warning("Tenant injection did not revalidate: %s", post_check.reason)
@@ -556,7 +554,7 @@ class SQLGuard:
         limited = statement.copy()
         limited.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
         try:
-            return limited.sql(dialect=DIALECT)
+            return limited.sql(dialect=self.dialect)
         except Exception as exc:  # never let a rewrite failure block a safe query
             log.warning("Could not apply the row limit: %s", exc)
             return None

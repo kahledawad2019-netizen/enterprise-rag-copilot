@@ -212,19 +212,28 @@ class ReadOnlyRunner:
         self, sql: str, *, tenant_id: int | None
     ) -> tuple[list[dict[str, Any]], list[str]]:
         with raw_connection(self.settings) as conn:
-            # Cap on how long the query may run. In pyodbc this is a property
-            # of the CONNECTION, not the cursor - setting it on the cursor
-            # raises AttributeError, so a runaway query would never be cut off.
-            conn.timeout = self.settings.database.query_timeout_seconds
             cursor = conn.cursor()
-
-            # SQL Server RLS is the hard tenant boundary. Set (or clear) the
-            # value on every borrowed connection; pyodbc pooling can otherwise
-            # retain a previous caller's session context.
-            cursor.execute(
-                "EXEC sys.sp_set_session_context @key=N'tenant_id', @value=?",
-                tenant_id,
-            )
+            if self.settings.database_backend == "postgresql":
+                # SET LOCAL is transaction-scoped, so a pooled connection can
+                # never leak one caller's tenant into the next request.
+                timeout_ms = self.settings.database.query_timeout_seconds * 1000
+                cursor.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(timeout_ms),),
+                )
+                cursor.execute(
+                    "SELECT set_config('app.tenant_id', %s, true)",
+                    ("" if tenant_id is None else str(tenant_id),),
+                )
+            else:
+                # In pyodbc timeout is a CONNECTION property, not a cursor
+                # property. SQL Server session context is explicitly cleared
+                # because pooling can otherwise retain the previous caller.
+                conn.timeout = self.settings.database.query_timeout_seconds
+                cursor.execute(
+                    "EXEC sys.sp_set_session_context @key=N'tenant_id', @value=?",
+                    tenant_id,
+                )
             cursor.execute(sql)
 
             if cursor.description is None:
@@ -293,14 +302,14 @@ class ReadOnlyRunner:
         """
         try:
             with raw_connection(self.settings, autocommit=True) as conn:
-                conn.cursor().execute(
-                    """
+                statement = """
                     INSERT INTO ai.audit_events
                         (trace_id, app_user, tenant_id, route, question, generated_sql,
                          sql_allowed, block_reason, row_count, duration_ms, model_name,
                          error_category)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    VALUES ({placeholders})
+                    """
+                values = (
                     trace_id,
                     app_user,
                     tenant_id,
@@ -314,6 +323,11 @@ class ReadOnlyRunner:
                     self.settings.chat_model,
                     error_category,
                 )
+                cursor = conn.cursor()
+                if self.settings.database_backend == "postgresql":
+                    cursor.execute(statement.format(placeholders=", ".join(["%s"] * 12)), values)
+                else:
+                    cursor.execute(statement.format(placeholders=", ".join(["?"] * 12)), *values)
         except Exception as exc:
             log.warning("Audit write failed (query still proceeds): %s", exc)
 

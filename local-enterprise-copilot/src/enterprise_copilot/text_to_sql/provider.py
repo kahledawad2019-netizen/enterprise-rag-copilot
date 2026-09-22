@@ -108,7 +108,12 @@ class TextToSQLProvider(ABC):
         # the query references but the retriever did not offer - which is
         # exactly how the SUM(invoice_number) failure slipped through.
         catalog = self.schema.load_catalog()
-        problems = validate_against_schema(generated.sql, generated.context, catalog)
+        problems = validate_against_schema(
+            generated.sql,
+            generated.context,
+            catalog,
+            dialect=self.settings.sql_dialect,
+        )
         if not problems:
             return generated
 
@@ -117,7 +122,12 @@ class TextToSQLProvider(ABC):
 
         repaired = self._repair_sql(generated.sql, problems)
         if repaired:
-            remaining = validate_against_schema(repaired, generated.context, catalog)
+            remaining = validate_against_schema(
+                repaired,
+                generated.context,
+                catalog,
+                dialect=self.settings.sql_dialect,
+            )
             generated.sql = repaired
             generated.warnings.append(
                 "SQL was repaired automatically"
@@ -128,7 +138,7 @@ class TextToSQLProvider(ABC):
 
     def _repair_sql(self, sql: str, problems: list[str]) -> str:
         """One corrective LLM pass with the specific problem fed back."""
-        from .native import REPAIR_PROMPT, SYSTEM_PROMPT, extract_sql
+        from .native import extract_sql, repair_prompt_for, system_prompt_for
 
         try:
             from ..llm import build_chat_client
@@ -137,10 +147,10 @@ class TextToSQLProvider(ABC):
             response = client.chat(
                 model=self.settings.chat_model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt_for(self.settings)},
                     {
                         "role": "user",
-                        "content": REPAIR_PROMPT.format(
+                        "content": repair_prompt_for(self.settings).format(
                             sql=sql, problems=chr(10).join(f"- {p}" for p in problems)
                         ),
                     },

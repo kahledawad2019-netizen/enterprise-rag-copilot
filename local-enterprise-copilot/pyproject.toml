@@ -27,6 +27,8 @@ dependencies = [
 
     # --- SQL Server ---
     "pyodbc>=5.2",
+    # --- PostgreSQL / Neon cloud deployment ---
+    "psycopg[binary]>=3.2,<4",
     "SQLAlchemy>=2.0.36,<3",
     "sqlglot>=25.0,<31",
 
@@ -147,6 +149,8 @@ module = [
     "pandas",
     "pandas.*",
     "pyodbc",
+    "psycopg",
+    "psycopg.*",
     "yaml",
     "sentence_transformers",
     "sentence_transformers.*",

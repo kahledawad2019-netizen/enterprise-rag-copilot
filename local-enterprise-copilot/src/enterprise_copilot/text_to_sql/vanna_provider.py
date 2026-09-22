@@ -128,7 +128,7 @@ class VannaTextToSQLProvider(TextToSQLProvider):
         # Vanna prints progress with bare print(); swallow it.
         with contextlib.redirect_stdout(io.StringIO()):
             for table in catalog:
-                self._vanna.train(ddl=table.to_ddl())
+                self._vanna.train(ddl=table.to_ddl(dialect=self.settings.sql_dialect))
                 counts["ddl"] += 1
 
             for relationship in self.schema._relationships or []:
@@ -158,9 +158,10 @@ class VannaTextToSQLProvider(TextToSQLProvider):
 
         with raw_connection(self.settings) as conn:
             cursor = conn.cursor()
+            current = "TRUE" if self.settings.sql_dialect == "postgres" else "1"
             cursor.execute(
                 "SELECT term, definition, sql_guidance, version, known_exclusions "
-                "FROM ai.business_glossary WHERE is_current = 1"
+                f"FROM ai.business_glossary WHERE is_current = {current}"
             )
             return [
                 {
@@ -178,8 +179,10 @@ class VannaTextToSQLProvider(TextToSQLProvider):
 
         with raw_connection(self.settings) as conn:
             cursor = conn.cursor()
+            active = "TRUE" if self.settings.sql_dialect == "postgres" else "1"
             cursor.execute(
-                "SELECT question, sql_text FROM ai.approved_sql_examples WHERE is_active = 1"
+                "SELECT question, sql_text FROM ai.approved_sql_examples "
+                f"WHERE is_active = {active}"
             )
             return [{"question": q, "sql_text": s} for q, s in cursor.fetchall()]
 
