@@ -40,6 +40,11 @@ dependencies = [
     "pypdf>=5.0",
     "python-docx>=1.1",
     "markdown-it-py>=3.0",
+    # Every document in the corpus carries YAML front matter, which
+    # ingestion/parsers.py parses on import. This was undeclared and happened
+    # to be present transitively on the original build machine; on a clean
+    # install the whole test suite failed to collect. Declared explicitly.
+    "PyYAML>=6.0",
 
     # --- data & analytics ---
     "pandas>=2.2",

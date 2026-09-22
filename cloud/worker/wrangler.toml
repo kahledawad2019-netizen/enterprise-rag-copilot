@@ -1,0 +1,62 @@
+name = "copilot-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+# Node compatibility is not needed: the Worker uses only Web Crypto, fetch and
+# URL. Keeping it off keeps the bundle small and the cold start short.
+
+# ---------------------------------------------------------------------------
+# Plain variables. These are visible in the dashboard and in `wrangler deploy`
+# output, so nothing secret belongs here.
+# ---------------------------------------------------------------------------
+[vars]
+# Where the UI is served from. The Worker refuses CORS for any other origin.
+# Add your custom domain here once it is attached.
+ALLOWED_ORIGINS = "http://localhost:5173,https://copilot-ui.pages.dev"
+
+# The FastAPI container. Replace with your deployed URL.
+BACKEND_URL = "https://copilot-api.fly.dev"
+
+# Cloudflare Access. Leave both unset until Zero Trust is configured; the
+# Worker then runs without authentication, which is correct for a first
+# smoke test and wrong for anything else.
+# ACCESS_AUD = ""
+# ACCESS_TEAM_DOMAIN = "yourteam.cloudflareaccess.com"
+
+# ---------------------------------------------------------------------------
+# Secrets - NEVER put these in this file.
+#
+#   wrangler secret put BACKEND_TOKEN
+#
+# The token the Worker presents to the backend. The backend rejects any
+# request that does not carry it, which is what keeps the container private
+# even though it has a public URL.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Rate limiting. 20 questions per minute per identity. Generation is the
+# expensive step; this is a cost control as much as an abuse control.
+# ---------------------------------------------------------------------------
+[[ratelimits]]
+name = "ASK_LIMITER"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Staging. `wrangler deploy --env staging` points at a separate backend so a
+# broken deploy never takes the live one with it.
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "copilot-api-staging"
+
+[env.staging.vars]
+ALLOWED_ORIGINS = "http://localhost:5173,https://staging.copilot-ui.pages.dev"
+BACKEND_URL = "https://copilot-api-staging.fly.dev"
+
+[[env.staging.ratelimits]]
+name = "ASK_LIMITER"
+namespace_id = "1002"
+simple = { limit = 20, period = 60 }
