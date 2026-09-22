@@ -19,7 +19,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential \
+ && apt-get install -y --no-install-recommends build-essential unixodbc-dev curl \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -40,6 +40,29 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app/local-enterprise-copilot/src"
+
+# ---------------------------------------------------------------------------
+# Microsoft ODBC Driver 18, which pyodbc is a thin wrapper over. Without this
+# the container starts fine and then fails on the first query with IM002,
+# "Data source name not found and no default driver specified" - an error that
+# names nothing useful.
+#
+# The Debian major version is read from the image rather than hardcoded, so a
+# base bump from bookworm to trixie does not silently install the wrong repo.
+# Microsoft publishes this package for Debian 9 through 13.
+#
+# libgssapi-krb5-2 is listed as optional in Microsoft's instructions but is
+# required on -slim images, which do not ship it.
+# ---------------------------------------------------------------------------
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+ && curl -sSL -O "https://packages.microsoft.com/config/debian/$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2 | cut -d '.' -f 1)/packages-microsoft-prod.deb" \
+ && dpkg -i packages-microsoft-prod.deb \
+ && rm packages-microsoft-prod.deb \
+ && apt-get update \
+ && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 libgssapi-krb5-2 \
+ && apt-get purge -y --auto-remove curl gnupg \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
 

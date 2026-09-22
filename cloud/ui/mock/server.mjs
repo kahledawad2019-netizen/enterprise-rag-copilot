@@ -216,6 +216,103 @@ const REFUSAL = {
   timings_ms: { routing: 1.2, total: 1.4 },
 };
 
+/** The real failure case that motivates hybrid retrieval, reproduced. */
+const RETRIEVE_FIXTURE = {
+  "INC-2025-0042": {
+    dense: [
+      ["DOC-PM-2025-0031", "1.0", "3. Timeline", 0.8421, 0.8421, 1, null, null, null],
+      ["DOC-PM-2025-0042", "1.0", "3. Timeline", 0.8106, 0.8106, 2, null, null, null],
+      ["DOC-INC-001", "2.0", "4. Severity levels", 0.7233, 0.7233, 3, null, null, null],
+    ],
+    sparse: [
+      ["DOC-PM-2025-0042", "1.0", "1. Summary", 11.204, null, null, 11.204, 1, null],
+      ["DOC-INC-001", "2.0", "6. Postmortems", 3.881, null, null, 3.881, 2, null],
+      ["DOC-PM-2025-0031", "1.0", "1. Summary", 2.009, null, null, 2.009, 3, null],
+    ],
+    hybrid: [
+      ["DOC-PM-2025-0042", "1.0", "1. Summary", 0.0328, 0.8106, 2, 11.204, 1, null],
+      ["DOC-PM-2025-0031", "1.0", "3. Timeline", 0.0323, 0.8421, 1, 2.009, 3, null],
+      ["DOC-INC-001", "2.0", "6. Postmortems", 0.0317, 0.7233, 3, 3.881, 2, null],
+    ],
+    reranked: [
+      ["DOC-PM-2025-0042", "1.0", "1. Summary", 0.9914, 0.8106, 2, 11.204, 1, 0.9914],
+      ["DOC-INC-001", "2.0", "6. Postmortems", 0.4402, 0.7233, 3, 3.881, 2, 0.4402],
+      ["DOC-PM-2025-0031", "1.0", "3. Timeline", 0.1187, 0.8421, 1, 2.009, 3, 0.1187],
+    ],
+  },
+};
+
+const DEFAULT_HITS = {
+  dense: [
+    ["DOC-REF-001", "2.1", "3. Annual plans", 0.9102, 0.9102, 1, null, null, null],
+    ["DOC-REF-000", "1.0", "3. Annual plans", 0.8677, 0.8677, 2, null, null, null],
+    ["DOC-PRC-001", "3.0", "5. Credits", 0.7741, 0.7741, 3, null, null, null],
+  ],
+  sparse: [
+    ["DOC-REF-001", "2.1", "3. Annual plans", 9.442, null, null, 9.442, 1, null],
+    ["DOC-REF-000", "1.0", "3. Annual plans", 8.917, null, null, 8.917, 2, null],
+    ["DOC-ENT-001", "1.2", "7. Termination", 4.006, null, null, 4.006, 3, null],
+  ],
+  hybrid: [
+    ["DOC-REF-001", "2.1", "3. Annual plans", 0.0328, 0.9102, 1, 9.442, 1, null],
+    ["DOC-REF-000", "1.0", "3. Annual plans", 0.0323, 0.8677, 2, 8.917, 2, null],
+    ["DOC-PRC-001", "3.0", "5. Credits", 0.0161, 0.7741, 3, null, null, null],
+  ],
+  reranked: [
+    ["DOC-REF-001", "2.1", "3. Annual plans", 0.9866, 0.9102, 1, 9.442, 1, 0.9866],
+    ["DOC-REF-000", "1.0", "3. Annual plans", 0.6104, 0.8677, 2, 8.917, 2, 0.6104],
+    ["DOC-PRC-001", "3.0", "5. Credits", 0.2280, 0.7741, 3, null, null, 0.228],
+  ],
+};
+
+const ELAPSED = { dense: 118, sparse: 4, hybrid: 46, reranked: 2148 };
+
+function toHit(row, rank) {
+  const [doc_id, version, section, score, dense_score, dense_rank, sparse_score, sparse_rank, rerank_score] = row;
+  return {
+    rank,
+    doc_id,
+    title: doc_id.replace(/^DOC-/, "").replace(/-/g, " "),
+    version,
+    section,
+    score,
+    dense_score,
+    dense_rank,
+    sparse_score,
+    sparse_rank,
+    rerank_score,
+    snippet: "",
+  };
+}
+
+const EVALUATION = {
+  runs: [],
+  report: {
+    cases: 96,
+    k: 8,
+    bootstrap_resamples: 10000,
+    strategies: [
+      { name: "dense", ndcg: 0.856, ci: [0.809, 0.9], mrr: 0.811, recall: 0.99, median_ms: 49 },
+      { name: "sparse", ndcg: 0.877, ci: [0.833, 0.918], mrr: 0.839, recall: 0.99, median_ms: 4 },
+      { name: "hybrid", ndcg: 0.925, ci: [0.882, 0.961], mrr: 0.906, recall: 0.979, median_ms: 54 },
+      { name: "reranked", ndcg: 0.946, ci: [0.914, 0.974], mrr: 0.928, recall: 1.0, median_ms: 1454 },
+    ],
+    comparisons: [
+      { pair: "hybrid vs dense", delta: 0.069, ci: [0.029, 0.11], p: 0.0002, significant: true },
+      { pair: "reranked vs dense", delta: 0.091, ci: [0.055, 0.131], p: 0.00005, significant: true },
+      { pair: "hybrid vs sparse", delta: 0.047, ci: [0.01, 0.085], p: 0.014, significant: true },
+      { pair: "reranked vs sparse", delta: 0.07, ci: [0.033, 0.109], p: 0.0002, significant: true },
+      { pair: "sparse vs dense", delta: 0.021, ci: [-0.033, 0.078], p: 0.448, significant: false },
+      { pair: "reranked vs hybrid", delta: 0.023, ci: [-0.013, 0.059], p: 0.217, significant: false },
+    ],
+    headline:
+      "Hybrid retrieval is a real improvement over dense: +0.069 NDCG, the interval excludes zero, " +
+      "and it survives Holm-Bonferroni correction. Reranking is NOT statistically distinguishable " +
+      "from hybrid - the interval [-0.013, +0.059] contains zero - and costs 36x the latency. " +
+      "That second result contradicts what was claimed during development.",
+  },
+};
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -226,6 +323,39 @@ const server = createServer((req, res) => {
 
   if (url.pathname === "/api/meta") return send(200, META);
   if (url.pathname === "/api/health") return send(200, HEALTH);
+  if (url.pathname === "/api/evaluation") return send(200, EVALUATION);
+
+  if (url.pathname === "/api/retrieve" && req.method === "POST") {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      let body = {};
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        /* fall through to the default fixture */
+      }
+      const query = body.query ?? "";
+      const table = RETRIEVE_FIXTURE[query.trim()] ?? DEFAULT_HITS;
+      const strategies = body.strategies ?? ["dense", "sparse", "hybrid", "reranked"];
+      setTimeout(
+        () =>
+          send(200, {
+            query,
+            runs: strategies.map((strategy) => ({
+              strategy,
+              elapsed_ms: ELAPSED[strategy] ?? 50,
+              // Array.map passes the 0-based index, and rank is 1-based - the
+              // backend builds it with enumerate(..., start=1).
+              results: (table[strategy] ?? []).map((row, i) => toHit(row, i + 1)),
+              error: null,
+            })),
+          }),
+        500,
+      );
+    });
+    return;
+  }
 
   if (url.pathname === "/api/ask" && req.method === "POST") {
     let raw = "";

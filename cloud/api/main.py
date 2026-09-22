@@ -425,6 +425,193 @@ def ask(
     return _to_response(answer, trace, elapsed)
 
 
+class RetrieveRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    persona: str = "admin"
+    limit: int = Field(default=8, ge=1, le=20)
+    strategies: list[str] = Field(default_factory=lambda: ["dense", "sparse", "hybrid", "reranked"])
+
+
+class ScoredChunkOut(BaseModel):
+    rank: int
+    doc_id: str
+    title: str = ""
+    version: str = ""
+    section: str = ""
+    score: float
+    dense_score: float | None = None
+    dense_rank: int | None = None
+    sparse_score: float | None = None
+    sparse_rank: int | None = None
+    rerank_score: float | None = None
+    snippet: str = ""
+
+
+class StrategyRun(BaseModel):
+    strategy: str
+    elapsed_ms: float
+    results: list[ScoredChunkOut]
+    error: str | None = None
+
+
+class RetrieveResponse(BaseModel):
+    query: str
+    runs: list[StrategyRun]
+
+
+@app.post("/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_token)])
+def retrieve(body: RetrieveRequest, copilot: Copilot = Depends(get_copilot)) -> RetrieveResponse:
+    """Run the same query through several strategies so they can be compared.
+
+    This is the project's most informative screen: it is where "hybrid beats
+    dense" stops being a claim and becomes something you can watch happen.
+    Try `INC-2025-0042` - dense returns the wrong incident, sparse gets it
+    right at rank 1, and hybrid keeps the sparse answer.
+    """
+    persona = PERSONAS.get(body.persona)
+    if persona is None:
+        raise HTTPException(status_code=400, detail=f"Unknown persona {body.persona!r}.")
+
+    user = UserContext(
+        user_name=persona["label"],
+        tenant=persona["tenant"],
+        access_groups=list(persona["access_groups"]),
+        is_admin=persona["is_admin"],
+    )
+
+    runs: list[StrategyRun] = []
+    for strategy in body.strategies:
+        started = time.perf_counter()
+        try:
+            results, _ = copilot.retriever.retrieve(
+                body.query, strategy=strategy, user=user, limit=body.limit
+            )
+        except Exception as exc:
+            # One failing strategy must not lose the others: a comparison with
+            # three of four columns is still a useful comparison.
+            log.warning("retrieval failed for %s: %s", strategy, exc)
+            runs.append(
+                StrategyRun(
+                    strategy=strategy,
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    results=[],
+                    error=_short(exc),
+                )
+            )
+            continue
+
+        runs.append(
+            StrategyRun(
+                strategy=strategy,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                results=[
+                    ScoredChunkOut(
+                        rank=rank,
+                        doc_id=item.chunk.doc_id,
+                        title=item.chunk.title,
+                        version=item.chunk.version,
+                        section=item.chunk.section_path,
+                        score=round(item.score, 4),
+                        dense_score=_round(item.dense_score),
+                        dense_rank=item.dense_rank,
+                        sparse_score=_round(item.sparse_score),
+                        sparse_rank=item.sparse_rank,
+                        rerank_score=_round(item.rerank_score),
+                        snippet=item.chunk.text[:SNIPPET_CHARS],
+                    )
+                    for rank, item in enumerate(results, start=1)
+                ],
+            )
+        )
+
+    return RetrieveResponse(query=body.query, runs=runs)
+
+
+@app.get("/evaluation", dependencies=[Depends(require_token)])
+def evaluation() -> dict[str, Any]:
+    """The measured numbers, read from the committed evaluation runs.
+
+    Served from disk rather than recomputed: a full evaluation takes minutes
+    of model time, and a dashboard that silently re-runs it on every page load
+    is a dashboard nobody opens twice.
+    """
+    import json
+
+    results_dir = PROJECT_ROOT / "evals" / "results"
+    runs: list[dict[str, Any]] = []
+    if results_dir.exists():
+        for path in sorted(results_dir.glob("*.json"), reverse=True)[:20]:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                log.warning("could not read %s: %s", path.name, exc)
+                continue
+            runs.append({"file": path.name, "kind": path.name.split("_")[0], "payload": payload})
+
+    return {"runs": runs, "report": _HELD_OUT_SUMMARY}
+
+
+# The headline figures from docs/evaluation_report.md. Held here so the
+# dashboard can render them without parsing prose, and kept in one place so
+# there is a single thing to update when the evaluation is re-run.
+_HELD_OUT_SUMMARY: dict[str, Any] = {
+    "cases": 96,
+    "k": 8,
+    "bootstrap_resamples": 10000,
+    "strategies": [
+        {"name": "dense", "ndcg": 0.856, "ci": [0.809, 0.900], "mrr": 0.811, "recall": 0.990, "median_ms": 49},
+        {"name": "sparse", "ndcg": 0.877, "ci": [0.833, 0.918], "mrr": 0.839, "recall": 0.990, "median_ms": 4},
+        {"name": "hybrid", "ndcg": 0.925, "ci": [0.882, 0.961], "mrr": 0.906, "recall": 0.979, "median_ms": 54},
+        {"name": "reranked", "ndcg": 0.946, "ci": [0.914, 0.974], "mrr": 0.928, "recall": 1.000, "median_ms": 1454},
+    ],
+    "comparisons": [
+        {"pair": "hybrid vs dense", "delta": 0.069, "ci": [0.029, 0.110], "p": 0.0002, "significant": True},
+        {"pair": "reranked vs dense", "delta": 0.091, "ci": [0.055, 0.131], "p": 0.00005, "significant": True},
+        {"pair": "hybrid vs sparse", "delta": 0.047, "ci": [0.010, 0.085], "p": 0.014, "significant": True},
+        {"pair": "reranked vs sparse", "delta": 0.070, "ci": [0.033, 0.109], "p": 0.0002, "significant": True},
+        {"pair": "sparse vs dense", "delta": 0.021, "ci": [-0.033, 0.078], "p": 0.448, "significant": False},
+        {"pair": "reranked vs hybrid", "delta": 0.023, "ci": [-0.013, 0.059], "p": 0.217, "significant": False},
+    ],
+    "headline": (
+        "Hybrid retrieval is a real improvement over dense: +0.069 NDCG, the interval "
+        "excludes zero, and it survives Holm-Bonferroni correction. Reranking is NOT "
+        "statistically distinguishable from hybrid - the interval [-0.013, +0.059] "
+        "contains zero - and costs 36x the latency. That second result contradicts "
+        "what was claimed during development."
+    ),
+}
+
+
+@app.get("/traces", dependencies=[Depends(require_token)])
+def traces(limit: int = 50) -> dict[str, Any]:
+    """The most recent traces, newest first. Attributes are already redacted."""
+    import json
+
+    trace_dir = get_settings().observability.trace_dir
+    records: list[dict[str, Any]] = []
+    if trace_dir.exists():
+        for path in sorted(trace_dir.glob("traces_*.jsonl"), reverse=True):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except Exception as exc:
+                log.warning("could not read %s: %s", path.name, exc)
+                continue
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+                if len(records) >= limit:
+                    return {"traces": records}
+    return {"traces": records}
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, 4)
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
     """Error shape the UI already understands: {error, detail}."""

@@ -39,9 +39,31 @@ container behind it.
  └───┬──────────┬───────┘
      │          │
      ▼          ▼
-  Postgres   Vanna Cloud          (see docs/vanna_cloud.md before enabling)
-  (Neon)     text-to-SQL
+  Azure SQL  Vanna Cloud          (see docs/vanna_cloud.md before enabling)
+  (free)     text-to-SQL
 ```
+
+### Why Azure SQL and not Postgres
+
+Postgres is the more natural fit for Cloudflare — Hyperdrive supports it and
+SQL Server is not supported at all. It was still the wrong choice here.
+
+The database layer is SQL Server throughout: 2,198 lines of T-SQL across eight
+scripts with ~246 dialect-specific constructs, `DIALECT = "tsql"` in the SQL
+guard, T-SQL in the schema retriever's catalog queries, and ten
+human-verified SQL examples. All of it is *verified* — 14 of 14 attack shapes
+blocked, tenant isolation proven, 43 data validations passing.
+
+Translating that would have put every one of those results back in question,
+and it could not have been checked here: this machine has no Docker and no
+local Postgres. Azure SQL's [free
+offer](https://learn.microsoft.com/en-us/azure/azure-sql/database/free-offer?view=azuresql)
+— 100,000 vCore-seconds and 32 GB per month, renewing for the lifetime of the
+subscription — removes the only argument the other way. The dataset is ~287k
+rows, far inside 32 GB.
+
+Hyperdrive is not used. The container talks to Azure SQL directly over ODBC;
+the Worker never touches the database.
 
 The container is the only thing that can reach the database. It has a public
 URL, and the bearer token is what keeps it private — which is why
@@ -59,20 +81,17 @@ URL, and the bearer token is what keeps it private — which is why
 | `api/` — FastAPI adapter | **Built.** Not yet run against a live copilot. |
 | `api/Dockerfile` | **Written.** Not yet built — there is no Docker on this machine. |
 | Vanna Cloud provider | **Built and wired.** Needs your API key. |
-| Postgres migration | **Not done.** See below. |
+| Database migration | **Not needed.** Azure SQL runs the existing T-SQL unchanged. |
 
-### The Postgres migration is the remaining blocker
+### Still to do
 
-The database layer is SQL Server throughout: 2,198 lines of T-SQL across eight
-scripts with ~246 dialect-specific constructs (`IDENTITY`, `NVARCHAR`,
-`DATETIME2`, `GETDATE()`, `TOP (n)`, bracket-quoted identifiers), plus
-`pyodbc` in `database/connection.py`, `DIALECT = "tsql"` in the SQL guard,
-and T-SQL in the schema retriever's catalog queries.
-
-This cannot be verified on this machine — there is no Docker and no local
-Postgres — so it will be translated with `sqlglot` and checked mechanically,
-then confirmed against your Neon instance once it exists. Writing 2,000 lines
-of untested DDL and calling it done would not be an honest deliverable.
+- Build the image and run it once. The Dockerfile has never been built,
+  because there is no Docker here.
+- Provision Azure SQL and run `sql/001`–`008` against it.
+- Decide how the container generates text. It has no GPU, so Ollama is not
+  available to it: either `VANNA_MODE=cloud` for SQL generation plus a hosted
+  model for answers and embeddings, or point `OLLAMA_HOST` at a machine that
+  has one.
 
 ---
 
@@ -82,7 +101,7 @@ of untested DDL and calling it done would not be an honest deliverable.
 - Node 20+ and npm. This machine has Node 24.16.0.
 - A container host: [Fly.io](https://fly.io), [Render](https://render.com), or
   Cloudflare Containers (needs a Workers paid plan).
-- A [Neon](https://neon.tech) Postgres database (free tier).
+- An Azure account, for the free SQL Database offer.
 - A [Vanna](https://vanna.ai) API key, if you want Vanna Cloud.
 
 `wrangler` is not installed globally; every command below runs it through
@@ -105,7 +124,78 @@ Confirm it worked:
 npx wrangler whoami
 ```
 
-## 2. Deploy the backend container
+## 2. Create the database
+
+In the Azure portal: **Create a resource → SQL Database**. On the Basics tab,
+set **Use free offer** (labelled "Apply free offer"). Name the database
+`EnterpriseCopilot` to match `.env.example`.
+
+Then, still in the portal:
+
+- **Networking** → allow Azure services, and add your own IP so you can run
+  the setup scripts from this machine.
+- **Server** → note the admin login. Azure SQL has no Windows Authentication,
+  so this deployment uses a SQL login, unlike the local setup.
+
+Load the schema and the data. From `local-enterprise-copilot/`, with `.env`
+pointing at Azure:
+
+```ini
+MSSQL_SERVER=yourserver.database.windows.net
+MSSQL_DATABASE=EnterpriseCopilot
+MSSQL_AUTH_MODE=sql
+MSSQL_USERNAME=copilotadmin
+MSSQL_TRUST_SERVER_CERTIFICATE=false
+```
+
+`TRUST_SERVER_CERTIFICATE` **must** be false here. It is true locally only
+because the local instance uses a self-signed certificate; Azure presents a
+real one, and leaving this true would accept any certificate and make the
+connection interceptable.
+
+Store the password in the Windows Credential Manager rather than in `.env`:
+
+```powershell
+.venv\Scripts\python scripts\set_secret.py
+```
+
+Then build the database. The synthetic data is generated from a fixed seed, so
+this reproduces the same ~287,000 rows the evaluation was run against:
+
+```powershell
+.venv\Scripts\python scripts\setup_database.py
+```
+
+```powershell
+.venv\Scripts\python scripts\generate_synthetic_data.py
+```
+
+```powershell
+.venv\Scripts\python scripts\validate_data.py
+```
+
+The last command should report 43 checks, 0 failed.
+
+### Finally fix the read-only login
+
+`docs/architecture_decisions/ADR-003` records an unresolved issue: the local
+SQL Server is Windows-auth-only, so the read-only principal in
+`sql/006_create_security.sql` could never be given a login, and the
+application guard was the only thing protecting the data.
+
+**Azure SQL resolves this**, because it is SQL-auth throughout. Create a
+contained user that physically cannot write:
+
+```sql
+CREATE USER copilot_app WITH PASSWORD = '<a long random password>';
+ALTER ROLE db_datareader ADD MEMBER copilot_app;
+```
+
+Point the container at `copilot_app`, not the admin login. `check_environment.py`
+then reports `[ OK ] privileges - read-only login` instead of `[WARN] this
+login can WRITE`, and the guard stops being the only line of defence.
+
+## 3. Deploy the backend container
 
 From the **repository root**, not from `cloud/api/` — the image needs both
 directories:
@@ -121,7 +211,7 @@ fly launch --no-deploy --name copilot-api
 ```
 
 ```bash
-fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" DATABASE_URL="postgres://..." VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud
+fly secrets set BACKEND_TOKEN="$(openssl rand -base64 32)" MSSQL_SERVER="yourserver.database.windows.net" MSSQL_DATABASE="EnterpriseCopilot" MSSQL_AUTH_MODE=sql MSSQL_USERNAME="copilot_app" MSSQL_PASSWORD="..." MSSQL_TRUST_SERVER_CERTIFICATE=false VANNA_API_KEY="vn-..." VANNA_MODE=cloud TEXT_TO_SQL_PROVIDER=vanna_cloud
 ```
 
 ```bash
@@ -137,7 +227,7 @@ running and that it refuses unauthenticated callers:
 curl -i https://copilot-api.fly.dev/meta
 ```
 
-## 3. Deploy the Worker
+## 4. Deploy the Worker
 
 Edit `cloud/worker/wrangler.toml` and set `BACKEND_URL` to the container's URL
 and `ALLOWED_ORIGINS` to your Pages domain.
@@ -152,7 +242,7 @@ Paste the same token when prompted. Then:
 cd cloud/worker && npx wrangler deploy
 ```
 
-## 4. Deploy the UI
+## 5. Deploy the UI
 
 ```bash
 cd cloud/ui && npm install && npm run build
@@ -162,7 +252,7 @@ cd cloud/ui && npm install && npm run build
 cd cloud/ui && npx wrangler pages deploy dist --project-name copilot-ui
 ```
 
-## 5. Put them on one hostname
+## 6. Put them on one hostname
 
 The UI calls `/api/*` as a relative path, so the Worker must answer on the same
 hostname as the Pages site. In the Cloudflare dashboard, add a Worker route:
@@ -174,7 +264,7 @@ copilot.example.com/api/*  →  copilot-api
 Same origin means no CORS preflight on every question, and no build-time API
 URL to get wrong between environments.
 
-## 6. Lock it down with Cloudflare Access
+## 7. Lock it down with Cloudflare Access
 
 Until this step, anyone with the URL can ask questions and spend your
 inference budget.
@@ -204,7 +294,8 @@ Nothing in this table belongs in a file that git can see.
 | Name | Where it lives | Set with | What it is |
 |---|---|---|---|
 | `BACKEND_TOKEN` | Worker **and** container | `wrangler secret put` / `fly secrets set` | The shared secret that keeps the container private. Must match on both sides. |
-| `DATABASE_URL` | Container | `fly secrets set` | Postgres connection string from Neon. |
+| `MSSQL_PASSWORD` | Container | `fly secrets set` | Password for the read-only `copilot_app` user. |
+| `MSSQL_SERVER`, `MSSQL_DATABASE`, `MSSQL_USERNAME` | Container | `fly secrets set` | Not secret, but set the same way so the connection is configured in one place. |
 | `VANNA_API_KEY` | Container | `fly secrets set` | Vanna Cloud key. Omit to stay local. |
 | `ACCESS_AUD` | Worker (`vars`) | `wrangler.toml` | Not secret — an identifier. |
 | `ACCESS_TEAM_DOMAIN` | Worker (`vars`) | `wrangler.toml` | Not secret. |
@@ -249,7 +340,7 @@ cd cloud/worker && npx wrangler dev
 |---|---|---|
 | Pages | unlimited static requests | The UI costs nothing. |
 | Workers | 100k requests/day | The gateway is well inside this. |
-| Neon | 0.5 GB | The dataset is ~287k rows. |
+| Azure SQL | 100k vCore-sec + 32 GB/month, for the lifetime of the subscription | The dataset is ~287k rows, far inside it. |
 | Fly.io | ~$2–5/month | The only guaranteed cost. A free-tier alternative sleeps, and a cold start on this app is slow. |
 | Vanna Cloud | free tier | Check current limits. |
 

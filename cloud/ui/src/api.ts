@@ -1,4 +1,11 @@
-import type { AskResponse, HealthResponse, MetaResponse, Strategy } from "./types";
+import type {
+  AskResponse,
+  EvaluationResponse,
+  HealthResponse,
+  MetaResponse,
+  RetrieveResponse,
+  Strategy,
+} from "./types";
 
 /**
  * All network access lives here.
@@ -84,4 +91,30 @@ export function ask({ question, persona, strategy, signal }: AskOptions): Promis
     body: JSON.stringify({ question, persona, strategy }),
     signal,
   });
+}
+
+export interface RetrieveOptions {
+  query: string;
+  persona: string;
+  limit?: number;
+  strategies?: Strategy[];
+  signal?: AbortSignal;
+}
+
+export function retrieve({
+  query,
+  persona,
+  limit = 8,
+  strategies = ["dense", "sparse", "hybrid", "reranked"],
+  signal,
+}: RetrieveOptions): Promise<RetrieveResponse> {
+  return request<RetrieveResponse>("/retrieve", {
+    method: "POST",
+    body: JSON.stringify({ query, persona, limit, strategies }),
+    signal,
+  });
+}
+
+export function getEvaluation(): Promise<EvaluationResponse> {
+  return request<EvaluationResponse>("/evaluation");
 }

@@ -118,3 +118,66 @@ export interface ApiError {
   error: string;
   detail: string;
 }
+
+// --- retrieval debugger ----------------------------------------------------
+
+export interface ScoredChunk {
+  rank: number;
+  doc_id: string;
+  title: string;
+  version: string;
+  section: string;
+  score: number;
+  dense_score: number | null;
+  dense_rank: number | null;
+  sparse_score: number | null;
+  sparse_rank: number | null;
+  rerank_score: number | null;
+  snippet: string;
+}
+
+export interface StrategyRun {
+  strategy: Strategy;
+  elapsed_ms: number;
+  results: ScoredChunk[];
+  error: string | null;
+}
+
+export interface RetrieveResponse {
+  query: string;
+  runs: StrategyRun[];
+}
+
+// --- evaluation ------------------------------------------------------------
+
+export interface StrategyScore {
+  name: Strategy;
+  ndcg: number;
+  /** 95% bootstrap confidence interval, [low, high]. */
+  ci: [number, number];
+  mrr: number;
+  recall: number;
+  median_ms: number;
+}
+
+export interface Comparison {
+  pair: string;
+  delta: number;
+  ci: [number, number];
+  p: number;
+  significant: boolean;
+}
+
+export interface EvaluationReport {
+  cases: number;
+  k: number;
+  bootstrap_resamples: number;
+  strategies: StrategyScore[];
+  comparisons: Comparison[];
+  headline: string;
+}
+
+export interface EvaluationResponse {
+  runs: Array<{ file: string; kind: string; payload: unknown }>;
+  report: EvaluationReport;
+}

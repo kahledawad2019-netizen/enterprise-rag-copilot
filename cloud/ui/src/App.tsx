@@ -3,8 +3,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CopilotApiError, ask, getHealth, getMeta } from "./api";
 import AnswerCard from "./components/AnswerCard";
 import Composer from "./components/Composer";
+import Evaluation from "./components/Evaluation";
+import RetrievalDebugger from "./components/RetrievalDebugger";
 import Sidebar from "./components/Sidebar";
 import type { AskResponse, HealthResponse, MetaResponse, Strategy } from "./types";
+
+type View = "chat" | "retrieval" | "evaluation";
+
+const VIEWS: Array<{ id: View; label: string }> = [
+  { id: "chat", label: "Copilot" },
+  { id: "retrieval", label: "Retrieval" },
+  { id: "evaluation", label: "Evaluation" },
+];
 
 type Turn =
   | { kind: "question"; id: string; text: string }
@@ -20,6 +30,7 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
 
+  const [view, setView] = useState<View>("chat");
   const [persona, setPersona] = useState("admin");
   const [strategy, setStrategy] = useState<Strategy>("reranked");
 
@@ -135,6 +146,19 @@ export default function App() {
       </div>
 
       <header className="header">
+        <nav className="nav" aria-label="Sections">
+          {VIEWS.map((item) => (
+            <button
+              key={item.id}
+              className="nav__item"
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => setView(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
         <div className="header__meta">
           {health && (
             <span className={`badge ${healthTone}`} title={health.checks.map((c) => `${c.name}: ${c.detail}`).join("\n")}>
@@ -153,13 +177,15 @@ export default function App() {
           >
             {theme === "dark" ? "Dark" : theme === "light" ? "Light" : "System"}
           </button>
-          <button
-            className="btn btn--ghost"
-            disabled={!turns.length || busy}
-            onClick={() => setTurns([])}
-          >
-            Clear
-          </button>
+          {view === "chat" && (
+            <button
+              className="btn btn--ghost"
+              disabled={!turns.length || busy}
+              onClick={() => setTurns([])}
+            >
+              Clear
+            </button>
+          )}
         </div>
       </header>
 
@@ -174,6 +200,11 @@ export default function App() {
       />
 
       <main className="main">
+        {view === "retrieval" && <RetrievalDebugger meta={meta} persona={persona} />}
+        {view === "evaluation" && <Evaluation />}
+
+        {view === "chat" && (
+        <>
         <div className="thread">
           <div className="thread__inner">
             {bootError && (
@@ -230,6 +261,8 @@ export default function App() {
           onSubmit={() => submit(draft)}
           onStop={() => inFlight.current?.abort()}
         />
+        </>
+        )}
       </main>
     </div>
   );

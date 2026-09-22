@@ -853,6 +853,320 @@ td.num {
 }
 
 /* --------------------------------------------------------------------------
+   Secondary pages (retrieval debugger, evaluation)
+   -------------------------------------------------------------------------- */
+
+.page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 26px 28px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* The page is the scroll container, so its children must keep their natural
+   height. Without this they shrink to fit the viewport instead - which
+   silently clipped the bottom half of every chart card and left nothing to
+   scroll, so the page looked complete and was not. */
+.page > * {
+  flex-shrink: 0;
+}
+
+.page__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 660;
+  letter-spacing: -0.02em;
+}
+
+.page__sub {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 76ch;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.select--compact {
+  width: auto;
+  flex: none;
+}
+
+.probe-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.probe-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.probe {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.probe:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.probe:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.probe__query {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.probe__why {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.compare-col .pane {
+  padding: 8px 10px 12px;
+}
+
+.hit {
+  display: flex;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.hit:last-child {
+  border-bottom: none;
+}
+
+.hit--top .hit__rank {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.hit__rank {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.hit__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.hit__doc {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.hit__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 1px 0 4px;
+}
+
+.hit__scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+}
+
+.score__label {
+  color: var(--ink-faint);
+}
+
+.score__value {
+  font-family: var(--mono);
+  color: var(--ink);
+}
+
+.score__rank {
+  font-family: var(--mono);
+  color: var(--ink-faint);
+}
+
+/* --------------------------------------------------------------------------
+   Charts
+
+   One series, so the only colour requirement is contrast against the surface.
+   The hue is the validated categorical slot 1, stepped per mode; text stays
+   on ink tokens rather than taking the series colour.
+   -------------------------------------------------------------------------- */
+
+.viz {
+  --viz-series: #2a78d6;
+  --viz-grid: var(--border);
+  overflow-x: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .viz {
+    --viz-series: #3987e5;
+  }
+}
+
+:root[data-theme="dark"] .viz {
+  --viz-series: #3987e5;
+}
+
+.viz svg {
+  display: block;
+  min-width: 460px;
+}
+
+.viz-grid {
+  stroke: var(--viz-grid);
+  stroke-width: 1;
+}
+
+.viz-zero {
+  stroke: var(--ink-faint);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.viz-interval {
+  stroke: var(--viz-series);
+  stroke-width: 2;
+  stroke-linecap: butt;
+}
+
+.viz-dot {
+  fill: var(--viz-series);
+  /* A 2px surface ring keeps the marker legible where it sits on the
+     interval line or a gridline. */
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.viz-dot--hollow {
+  fill: var(--surface);
+  stroke: var(--viz-series);
+}
+
+.viz-row-label {
+  fill: var(--ink-muted);
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+.viz-axis-label {
+  fill: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.viz-value {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Primary navigation
+   -------------------------------------------------------------------------- */
+
+.nav {
+  display: flex;
+  gap: 2px;
+}
+
+.nav__item {
+  border: none;
+  background: none;
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nav__item:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.nav__item[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
    Composer
    -------------------------------------------------------------------------- */
 
