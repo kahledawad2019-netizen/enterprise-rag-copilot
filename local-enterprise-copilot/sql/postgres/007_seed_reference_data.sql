@@ -1,0 +1,511 @@
+/* ===========================================================================
+   007_seed_reference_data.sql  (PostgreSQL)
+
+   HAND-TRANSLATED from sql/007_seed_reference_data.sql.
+   This file contains PostgreSQL queries stored as training data, so it must
+   be reviewed independently rather than mechanically regenerated.
+
+   Verified by .github/workflows/postgres.yml against a real PostgreSQL 16.
+   =========================================================================== */
+
+/* ===========================================================================
+   007_seed_reference_data.sql
+   Schema version: 1.0.0
+
+   Reference data for "Northwind Cloud", a fictional B2B SaaS company.
+
+   This script seeds everything that is a *definition* rather than a
+   *transaction*: tenants, products, plans, SLA policies, access groups, the
+   business glossary, and the approved Text-to-SQL examples. Transactional
+   volume (customers, subscriptions, invoices, tickets) is produced separately
+   by scripts/generate_synthetic_data.py from a fixed seed.
+
+   Splitting it this way matters: reference data is reviewed by humans and
+   version-controlled here, while transactional data is regenerated freely.
+
+   Idempotent: every insert is guarded by NOT EXISTS on a natural key.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Tenants - three business units, deliberately in different regions and
+   currencies so cross-tenant isolation and multi-currency are both testable.
+   --------------------------------------------------------------------------- */
+INSERT INTO core.tenants (tenant_code, tenant_name, region, default_currency, time_zone)
+SELECT v.tenant_code, v.tenant_name, v.region, v.default_currency, v.time_zone
+FROM (VALUES
+    ('NWC-NA',  'Northwind Cloud North America', 'North America', 'USD', 'America/New_York'),
+    ('NWC-EU',  'Northwind Cloud EMEA',          'EMEA',          'EUR', 'Europe/Berlin'),
+    ('NWC-APAC','Northwind Cloud APAC',          'APAC',          'USD', 'Asia/Singapore')
+) AS v(tenant_code, tenant_name, region, default_currency, time_zone)
+WHERE NOT EXISTS (SELECT 1 FROM core.tenants t WHERE t.tenant_code = v.tenant_code);
+
+/* ---------------------------------------------------------------------------
+   Products - five SaaS products across three families.
+   --------------------------------------------------------------------------- */
+INSERT INTO core.products (product_code, product_name, product_family, description, launched_on)
+SELECT v.product_code, v.product_name, v.product_family, v.description, CAST(v.launched_on AS DATE)
+FROM (VALUES
+    ('NW-ANALYTICS', 'Northwind Analytics',  'Data',
+     'Self-service BI and dashboards for operational teams.',            '2021-03-01'),
+    ('NW-PIPELINE',  'Northwind DataPipeline','Data',
+     'Managed ETL and streaming ingestion with 200+ connectors.',        '2021-09-15'),
+    ('NW-DESK',      'Northwind ServiceDesk', 'Service',
+     'Ticketing, SLA management and customer support workflows.',        '2020-06-01'),
+    ('NW-SHIELD',    'Northwind Shield',      'Security',
+     'Audit logging, access governance and compliance reporting.',       '2022-01-10'),
+    ('NW-CONNECT',   'Northwind Connect',     'Service',
+     'Embedded messaging and customer notification platform.',           '2022-11-01')
+) AS v(product_code, product_name, product_family, description, launched_on)
+WHERE NOT EXISTS (SELECT 1 FROM core.products p WHERE p.product_code = v.product_code);
+
+/* ---------------------------------------------------------------------------
+   Plans - three tiers per product, monthly and annual.
+
+   list_price_monthly is always a MONTHLY figure, including for annual plans.
+   Annual plans are cheaper per month: that discount is the reason the MRR
+   glossary entry has to say how annual contracts are normalised, and it is a
+   calculation a schema-only prompt gets wrong roughly every time.
+   --------------------------------------------------------------------------- */
+INSERT INTO core.plans
+    (product_id, plan_code, plan_name, tier, billing_interval,
+     list_price_monthly, currency_code, seats_included, effective_from)
+SELECT p.product_id, v.plan_code, v.plan_name, v.tier, v.billing_interval,
+       v.list_price_monthly, 'USD', v.seats_included, CAST(v.effective_from AS DATE)
+FROM (VALUES
+    -- Analytics
+    ('NW-ANALYTICS','ANL-START-M', 'Analytics Starter (Monthly)',      'Starter',     'monthly',   99.0000,  5, '2021-03-01'),
+    ('NW-ANALYTICS','ANL-START-A', 'Analytics Starter (Annual)',       'Starter',     'annual',    82.5000,  5, '2021-03-01'),
+    ('NW-ANALYTICS','ANL-PRO-M',   'Analytics Professional (Monthly)', 'Professional','monthly',  499.0000, 25, '2021-03-01'),
+    ('NW-ANALYTICS','ANL-PRO-A',   'Analytics Professional (Annual)',  'Professional','annual',   415.0000, 25, '2021-03-01'),
+    ('NW-ANALYTICS','ANL-ENT-M',   'Analytics Enterprise (Monthly)',   'Enterprise',  'monthly', 1999.0000,100, '2021-03-01'),
+    ('NW-ANALYTICS','ANL-ENT-A',   'Analytics Enterprise (Annual)',    'Enterprise',  'annual',  1665.0000,100, '2021-03-01'),
+    -- DataPipeline
+    ('NW-PIPELINE', 'PIP-START-M', 'Pipeline Starter (Monthly)',       'Starter',     'monthly',  149.0000,  3, '2021-09-15'),
+    ('NW-PIPELINE', 'PIP-PRO-M',   'Pipeline Professional (Monthly)',  'Professional','monthly',  749.0000, 15, '2021-09-15'),
+    ('NW-PIPELINE', 'PIP-PRO-A',   'Pipeline Professional (Annual)',   'Professional','annual',   624.0000, 15, '2021-09-15'),
+    ('NW-PIPELINE', 'PIP-ENT-A',   'Pipeline Enterprise (Annual)',     'Enterprise',  'annual',  2499.0000, 60, '2021-09-15'),
+    -- ServiceDesk
+    ('NW-DESK',     'DSK-START-M', 'ServiceDesk Starter (Monthly)',    'Starter',     'monthly',   79.0000, 10, '2020-06-01'),
+    ('NW-DESK',     'DSK-PRO-M',   'ServiceDesk Professional (Monthly)','Professional','monthly',  389.0000, 40, '2020-06-01'),
+    ('NW-DESK',     'DSK-PRO-A',   'ServiceDesk Professional (Annual)','Professional','annual',   324.0000, 40, '2020-06-01'),
+    ('NW-DESK',     'DSK-ENT-A',   'ServiceDesk Enterprise (Annual)',  'Enterprise',  'annual',  1499.0000,150, '2020-06-01'),
+    -- Shield
+    ('NW-SHIELD',   'SHD-PRO-M',   'Shield Professional (Monthly)',    'Professional','monthly',  599.0000, 20, '2022-01-10'),
+    ('NW-SHIELD',   'SHD-ENT-M',   'Shield Enterprise (Monthly)',      'Enterprise',  'monthly', 2299.0000, 80, '2022-01-10'),
+    ('NW-SHIELD',   'SHD-ENT-A',   'Shield Enterprise (Annual)',       'Enterprise',  'annual',  1915.0000, 80, '2022-01-10'),
+    -- Connect
+    ('NW-CONNECT',  'CON-START-M', 'Connect Starter (Monthly)',        'Starter',     'monthly',   59.0000,  5, '2022-11-01'),
+    ('NW-CONNECT',  'CON-PRO-M',   'Connect Professional (Monthly)',   'Professional','monthly',  299.0000, 25, '2022-11-01'),
+    ('NW-CONNECT',  'CON-ENT-A',   'Connect Enterprise (Annual)',      'Enterprise',  'annual',  1249.0000, 75, '2022-11-01')
+) AS v(product_code, plan_code, plan_name, tier, billing_interval,
+       list_price_monthly, seats_included, effective_from)
+JOIN core.products p ON p.product_code = v.product_code
+WHERE NOT EXISTS (SELECT 1 FROM core.plans pl WHERE pl.plan_code = v.plan_code);
+
+/* ---------------------------------------------------------------------------
+   SLA policies - VERSIONED.
+
+   v1.0 ran to 2024-12-31; v2.0 tightened Enterprise P1 first response from
+   30 to 15 minutes. Keeping both means a 2023 ticket is judged by the 2023
+   contract. This is the structured mirror of the document corpus's superseded
+   SLA policy, and it is what the version-sensitive evaluation questions test.
+   --------------------------------------------------------------------------- */
+INSERT INTO support.sla_policies
+    (policy_code, plan_tier, priority, first_response_minutes, resolution_minutes,
+     coverage_hours, uptime_target_pct, version, effective_from, effective_to, is_current)
+SELECT v.policy_code, v.plan_tier, v.priority, v.first_response_minutes, v.resolution_minutes,
+       v.coverage_hours, v.uptime_target_pct, v.version, CAST(v.effective_from AS DATE), CAST(v.effective_to AS DATE), (v.is_current <> 0)
+FROM (VALUES
+    -- ---- v1.0 : in force 2020-06-01 .. 2024-12-31 ----
+    ('SLA-ENT-P1','Enterprise',  'P1',   30,   240,'24x7',           99.90,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-ENT-P2','Enterprise',  'P2',   60,   480,'24x7',           99.90,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-ENT-P3','Enterprise',  'P3',  240,  2880,'business_hours', 99.90,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-ENT-P4','Enterprise',  'P4',  480,  7200,'business_hours', 99.90,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-PRO-P1','Professional','P1',   60,   480,'24x7',           99.50,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-PRO-P2','Professional','P2',  120,   960,'business_hours', 99.50,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-PRO-P3','Professional','P3',  480,  4320,'business_hours', 99.50,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-PRO-P4','Professional','P4',  960, 10080,'business_hours', 99.50,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-STR-P1','Starter',     'P1',  240,  1440,'business_hours', 99.00,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-STR-P2','Starter',     'P2',  480,  2880,'business_hours', 99.00,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-STR-P3','Starter',     'P3',  960,  7200,'business_hours', 99.00,'1.0','2020-06-01','2024-12-31',0),
+    ('SLA-STR-P4','Starter',     'P4', 1440, 14400,'business_hours', 99.00,'1.0','2020-06-01','2024-12-31',0),
+    -- ---- v2.0 : in force from 2025-01-01 (Enterprise P1 tightened to 15 min) ----
+    ('SLA-ENT-P1','Enterprise',  'P1',   15,   180,'24x7',           99.95,'2.0','2025-01-01',NULL,1),
+    ('SLA-ENT-P2','Enterprise',  'P2',   45,   360,'24x7',           99.95,'2.0','2025-01-01',NULL,1),
+    ('SLA-ENT-P3','Enterprise',  'P3',  180,  2160,'business_hours', 99.95,'2.0','2025-01-01',NULL,1),
+    ('SLA-ENT-P4','Enterprise',  'P4',  480,  7200,'business_hours', 99.95,'2.0','2025-01-01',NULL,1),
+    ('SLA-PRO-P1','Professional','P1',   45,   360,'24x7',           99.50,'2.0','2025-01-01',NULL,1),
+    ('SLA-PRO-P2','Professional','P2',  120,   720,'business_hours', 99.50,'2.0','2025-01-01',NULL,1),
+    ('SLA-PRO-P3','Professional','P3',  480,  4320,'business_hours', 99.50,'2.0','2025-01-01',NULL,1),
+    ('SLA-PRO-P4','Professional','P4',  960, 10080,'business_hours', 99.50,'2.0','2025-01-01',NULL,1),
+    ('SLA-STR-P1','Starter',     'P1',  240,  1440,'business_hours', 99.00,'2.0','2025-01-01',NULL,1),
+    ('SLA-STR-P2','Starter',     'P2',  480,  2880,'business_hours', 99.00,'2.0','2025-01-01',NULL,1),
+    ('SLA-STR-P3','Starter',     'P3',  960,  7200,'business_hours', 99.00,'2.0','2025-01-01',NULL,1),
+    ('SLA-STR-P4','Starter',     'P4', 1440, 14400,'business_hours', 99.00,'2.0','2025-01-01',NULL,1)
+) AS v(policy_code, plan_tier, priority, first_response_minutes, resolution_minutes,
+       coverage_hours, uptime_target_pct, version, effective_from, effective_to, is_current)
+WHERE NOT EXISTS (
+    SELECT 1 FROM support.sla_policies sp
+    WHERE sp.policy_code = v.policy_code AND sp.version = v.version
+);
+
+/* ---------------------------------------------------------------------------
+   Access groups - document-level permissions for the RAG layer.
+   --------------------------------------------------------------------------- */
+INSERT INTO security.access_groups (group_code, group_name, description)
+SELECT v.group_code, v.group_name, v.description
+FROM (VALUES
+    ('public',        'Public',          'Readable by every authenticated user.'),
+    ('internal',      'Internal',        'Northwind Cloud employees only.'),
+    ('finance',       'Finance',         'Pricing, discounting and revenue policy.'),
+    ('support',       'Support',         'Escalation runbooks and SLA operations.'),
+    ('security',      'Security',        'Security policy and incident response.'),
+    ('exec',          'Executive',       'Board-level and strategic material.')
+) AS v(group_code, group_name, description)
+WHERE NOT EXISTS (SELECT 1 FROM security.access_groups g WHERE g.group_code = v.group_code);
+
+/* ---------------------------------------------------------------------------
+   Application users - drives tenant isolation and permission tests.
+   `analyst_eu` exists specifically so a cross-tenant request can be attempted
+   and proven to fail.
+   --------------------------------------------------------------------------- */
+INSERT INTO security.app_users (user_name, display_name, tenant_id, access_groups, is_admin)
+SELECT v.user_name, v.display_name, t.tenant_id, v.access_groups, (v.is_admin <> 0)
+FROM (VALUES
+    ('admin',      'Platform Administrator', 'NWC-NA',  'public,internal,finance,support,security,exec', 1),
+    ('analyst_na', 'Revenue Analyst (NA)',   'NWC-NA',  'public,internal,finance',                       0),
+    ('analyst_eu', 'Revenue Analyst (EMEA)', 'NWC-EU',  'public,internal,finance',                       0),
+    ('support_na', 'Support Lead (NA)',      'NWC-NA',  'public,internal,support',                       0),
+    ('guest',      'Guest (public only)',    'NWC-NA',  'public',                                        0)
+) AS v(user_name, display_name, tenant_code, access_groups, is_admin)
+JOIN core.tenants t ON t.tenant_code = v.tenant_code
+WHERE NOT EXISTS (SELECT 1 FROM security.app_users u WHERE u.user_name = v.user_name);
+DO $$ BEGIN RAISE NOTICE '007: tenants, products, plans, SLA policies, access groups and users seeded.'; END $$;
+/* ===========================================================================
+   BUSINESS GLOSSARY
+
+   This is the semantic layer, and it is the single most important reason this
+   system answers business questions correctly.
+
+   The schema says `subscriptions.mrr_amount DECIMAL(19,4)`. It does not say
+   that trials are excluded, that annual contracts are already normalised, or
+   that a paused subscription still counts. A model given only the schema will
+   invent a plausible and wrong definition. Every entry below therefore carries
+   SQL guidance and explicit exclusions, and both are injected into the
+   Text-to-SQL prompt.
+   =========================================================================== */
+INSERT INTO ai.business_glossary
+    (term, definition, sql_guidance, owner, version, effective_date,
+     related_tables, related_columns, example_calculation, known_exclusions, is_current)
+SELECT v.term, v.definition, v.sql_guidance, v.owner, v.version, CAST(v.effective_date AS DATE),
+       v.related_tables, v.related_columns, v.example_calculation, v.known_exclusions,
+       TRUE
+FROM (VALUES
+('MRR',
+ 'Monthly Recurring Revenue. The normalised monthly value of all paid, non-trial subscriptions that were active at any point during the month. Annual contracts are divided across the twelve months they cover rather than recognised in the month they are billed.',
+ 'Use analytics.vw_monthly_recurring_revenue. If querying base tables, sum core.subscriptions.mrr_amount where is_trial = FALSE and started_on <= end of month and (ended_on IS NULL OR ended_on >= start of month). Never sum invoice totals to get MRR: a single annual invoice would inflate one month twelvefold.',
+ 'Finance', '2.0', '2025-01-01',
+ 'core.subscriptions, analytics.vw_monthly_recurring_revenue',
+ 'subscriptions.mrr_amount, subscriptions.is_trial, subscriptions.started_on, subscriptions.ended_on',
+ 'SELECT month_start, SUM(mrr) FROM analytics.vw_monthly_recurring_revenue GROUP BY month_start;',
+ 'Excludes trials, one-off professional-services fees, usage overage charges, and taxes.'),
+
+('ARR',
+ 'Annual Recurring Revenue. MRR multiplied by twelve. A forward-looking run rate, not billed or collected revenue.',
+ 'ARR = MRR * 12. Use analytics.vw_monthly_recurring_revenue.arr, or vw_customer_360.current_arr for a single customer. Do not compute ARR by summing twelve months of invoices; that is trailing revenue, which is a different number.',
+ 'Finance', '2.0', '2025-01-01',
+ 'core.subscriptions, analytics.vw_monthly_recurring_revenue, analytics.vw_customer_360',
+ 'subscriptions.mrr_amount, vw_customer_360.current_arr',
+ 'SELECT TOP 5 customer_name, current_arr FROM analytics.vw_customer_360 ORDER BY current_arr DESC;',
+ 'Same exclusions as MRR. ARR is never reduced for expected churn.'),
+
+('Active customer',
+ 'A customer with at least one active, non-trial subscription and no churn date. Status alone is not sufficient: a customer can be flagged active while every subscription has lapsed.',
+ 'Prefer analytics.vw_customer_360 WHERE customer_status = ''active'' AND active_subscriptions > 0. On base tables, join core.customers to core.subscriptions with s.status = ''active'' AND s.is_trial = FALSE AND c.churn_date IS NULL.',
+ 'Revenue Operations', '1.1', '2024-06-01',
+ 'core.customers, core.subscriptions, analytics.vw_customer_360',
+ 'customers.status, customers.churn_date, subscriptions.status, subscriptions.is_trial',
+ 'SELECT COUNT(*) FROM analytics.vw_customer_360 WHERE customer_status = ''active'' AND active_subscriptions > 0;',
+ 'Excludes trial-only customers, suspended accounts, and customers whose only subscription is paused.'),
+
+('Active subscription',
+ 'A subscription with status ''active'', not a trial, whose start date has passed and whose end date is either null or in the future.',
+ 'core.subscriptions WHERE status = ''active'' AND is_trial = FALSE AND started_on <= CAST(NOW() AS date) AND (ended_on IS NULL OR ended_on >= CAST(NOW() AS date)).',
+ 'Revenue Operations', '1.0', '2023-01-01',
+ 'core.subscriptions', 'subscriptions.status, subscriptions.is_trial, subscriptions.started_on, subscriptions.ended_on',
+ 'SELECT COUNT(*) FROM core.subscriptions WHERE status = ''active'' AND is_trial = FALSE;',
+ 'Paused subscriptions are excluded from this count but still contribute to MRR.'),
+
+('New business',
+ 'MRR from customers acquired in the period who had no prior paid subscription. Distinct from expansion, which comes from existing customers.',
+ 'Sum core.subscription_changes.mrr_delta WHERE change_type = ''new'' in the period. Use analytics.vw_churn_metrics.new_business_mrr.',
+ 'Finance', '1.0', '2023-01-01',
+ 'core.subscription_changes, analytics.vw_churn_metrics', 'subscription_changes.change_type, subscription_changes.mrr_delta',
+ 'SELECT month_start, new_business_mrr FROM analytics.vw_churn_metrics ORDER BY month_start;',
+ 'Excludes reactivated customers; those are counted separately as reactivation.'),
+
+('Expansion revenue',
+ 'Additional MRR from existing customers through upgrades or seat increases within the period.',
+ 'Sum positive mrr_delta from core.subscription_changes WHERE change_type IN (''upgrade'',''seat_change'') AND mrr_delta > 0. Use analytics.vw_churn_metrics.expansion_mrr.',
+ 'Finance', '1.0', '2023-01-01',
+ 'core.subscription_changes, analytics.vw_churn_metrics', 'subscription_changes.change_type, subscription_changes.mrr_delta',
+ 'SELECT SUM(expansion_mrr) FROM analytics.vw_churn_metrics WHERE calendar_year = 2025;',
+ 'Excludes new customers and one-off overage charges.'),
+
+('Contraction revenue',
+ 'MRR lost from existing customers who downgraded or reduced seats but did not cancel. Reported as a positive number representing the amount lost.',
+ 'Sum the absolute value of negative mrr_delta WHERE change_type IN (''downgrade'',''seat_change''). Use analytics.vw_churn_metrics.contraction_mrr.',
+ 'Finance', '1.0', '2023-01-01',
+ 'core.subscription_changes, analytics.vw_churn_metrics', 'subscription_changes.change_type, subscription_changes.mrr_delta',
+ 'SELECT SUM(contraction_mrr) FROM analytics.vw_churn_metrics WHERE calendar_year = 2025;',
+ 'Excludes full cancellations, which are revenue churn, not contraction.'),
+
+('Churned customer',
+ 'A customer who has cancelled every paid subscription and has a non-null churn_date. Churn is recognised on the subscription end date, not on the date notice was given.',
+ 'core.customers WHERE status = ''churned'' AND churn_date IS NOT NULL. For a period, filter churn_date BETWEEN the period bounds.',
+ 'Revenue Operations', '1.1', '2024-06-01',
+ 'core.customers, analytics.vw_churn_metrics', 'customers.status, customers.churn_date',
+ 'SELECT COUNT(*) FROM core.customers WHERE churn_date BETWEEN ''2025-04-01'' AND ''2025-06-30'';',
+ 'Excludes trial expiries, which were never paid customers, and excludes customers who downgraded but stayed.'),
+
+('Revenue churn',
+ 'MRR lost to cancellations in a period, divided by MRR at the start of the period. Also called gross MRR churn.',
+ 'Use analytics.vw_churn_metrics.churned_mrr over the prior month''s mrr from vw_monthly_recurring_revenue. Do not net expansion against it; that would be net revenue retention, a different metric.',
+ 'Finance', '1.0', '2023-01-01',
+ 'analytics.vw_churn_metrics, analytics.vw_monthly_recurring_revenue', 'churn_metrics.churned_mrr',
+ 'churned_mrr / NULLIF(previous_month_mrr, 0)',
+ 'Excludes contraction. Gross churn never nets off expansion revenue.'),
+
+('Logo churn',
+ 'The count of customers lost in a period, divided by the count active at the start. Treats every customer equally regardless of size.',
+ 'Use analytics.vw_churn_metrics: churned_customers / NULLIF(customers_at_start, 0).',
+ 'Revenue Operations', '1.0', '2023-01-01',
+ 'core.customers, analytics.vw_churn_metrics', 'churn_metrics.churned_customers, churn_metrics.customers_at_start',
+ 'SELECT month_start, CAST(churned_customers AS DOUBLE PRECISION) / NULLIF(customers_at_start,0) FROM analytics.vw_churn_metrics;',
+ 'Excludes trial-only customers. Logo churn and revenue churn can move in opposite directions.'),
+
+('Trial customer',
+ 'A customer whose only subscriptions have is_trial = TRUE. Trials are excluded from all revenue metrics.',
+ 'core.subscriptions WHERE is_trial = TRUE. A customer is trial-only when no subscription has is_trial = FALSE.',
+ 'Revenue Operations', '1.0', '2023-01-01',
+ 'core.subscriptions, core.customers', 'subscriptions.is_trial, customers.status',
+ 'SELECT COUNT(DISTINCT customer_id) FROM core.subscriptions WHERE is_trial = TRUE;',
+ 'Never included in MRR, ARR, or churn denominators.'),
+
+('Paid customer',
+ 'A customer with at least one non-trial subscription that has generated at least one non-void invoice.',
+ 'Join core.customers to core.subscriptions (is_trial = FALSE) and billing.invoices (status <> ''void'').',
+ 'Finance', '1.0', '2023-01-01',
+ 'core.customers, core.subscriptions, billing.invoices', 'subscriptions.is_trial, invoices.status',
+ 'SELECT COUNT(DISTINCT c.customer_id) FROM core.customers c JOIN core.subscriptions s ON s.customer_id = c.customer_id AND s.is_trial = FALSE;',
+ 'Excludes trial-only customers and customers whose invoices were all voided.'),
+
+('Overdue invoice',
+ 'An invoice past its due date that has not been paid in full. Partially paid invoices remain overdue for the unpaid balance.',
+ 'billing.invoices WHERE status IN (''open'',''overdue'',''partial'') AND due_date < CAST(NOW() AS date). The outstanding amount is total_amount - amount_paid, not total_amount.',
+ 'Finance', '1.1', '2024-09-01',
+ 'billing.invoices, analytics.vw_customer_360', 'invoices.status, invoices.due_date, invoices.total_amount, invoices.amount_paid',
+ 'SELECT SUM(total_amount - amount_paid) FROM billing.invoices WHERE status IN (''open'',''overdue'',''partial'') AND due_date < CAST(NOW() AS date);',
+ 'Excludes voided and draft invoices. An invoice due today is not yet overdue.'),
+
+('Refund rate',
+ 'Total refunded amount divided by total billed amount over the same period, expressed as a percentage.',
+ 'SUM(billing.refunds.amount) / NULLIF(SUM(billing.invoices.total_amount), 0). Align both to the same period and exclude voided invoices.',
+ 'Finance', '1.0', '2023-01-01',
+ 'billing.refunds, billing.invoices', 'refunds.amount, refunds.refund_date, invoices.total_amount, invoices.issue_date',
+ 'SELECT SUM(r.amount) / NULLIF((SELECT SUM(total_amount) FROM billing.invoices WHERE status <> ''void''), 0) FROM billing.refunds r;',
+ 'Excludes SLA service credits issued as incident compensation, which are tracked in support.incident_impact.credit_amount.'),
+
+('SLA breach',
+ 'A ticket whose first response or resolution exceeded the contractual target in the SLA version that was in force ON THE DATE THE TICKET WAS OPENED. A ticket that never received a first response is always a first-response breach.',
+ 'Use analytics.vw_sla_performance, which already resolves the correct SLA version by ticket open date. Do not join support.sla_policies on is_current = TRUE: that judges historical tickets against today''s contract and silently misreports every pre-2025 ticket.',
+ 'Support Operations', '2.0', '2025-01-01',
+ 'support.tickets, support.sla_policies, support.sla_breaches, analytics.vw_sla_performance',
+ 'tickets.opened_at_utc, tickets.first_response_at_utc, sla_policies.first_response_minutes, sla_policies.effective_from',
+ 'SELECT customer_name, COUNT(*) FROM analytics.vw_sla_performance WHERE first_response_breached = 1 GROUP BY customer_name;',
+ 'Excludes tickets opened outside coverage hours for business_hours policies, and tickets the customer closed before any response was due.'),
+
+('First-response time',
+ 'Elapsed minutes between ticket open and the first agent response. Measured in UTC.',
+ '((EXTRACT(EPOCH FROM (CAST((tickets.first_response_at_utc) AS TIMESTAMP) - CAST((tickets.opened_at_utc) AS TIMESTAMP))) / 60))::int. NULL first_response_at_utc means no response was ever given; treat that as a breach, not as zero.',
+ 'Support Operations', '1.0', '2023-01-01',
+ 'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.first_response_at_utc',
+ 'SELECT AVG(CAST(actual_first_response_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_first_response_minutes IS NOT NULL;',
+ 'Excludes automated acknowledgements. Only a human agent response stops the clock.'),
+
+('Resolution time',
+ 'Elapsed minutes between ticket open and resolution. A ticket that is closed without being resolved has no resolution time.',
+ '((EXTRACT(EPOCH FROM (CAST((tickets.resolved_at_utc) AS TIMESTAMP) - CAST((tickets.opened_at_utc) AS TIMESTAMP))) / 60))::int. Exclude rows where resolved_at_utc IS NULL rather than treating them as zero.',
+ 'Support Operations', '1.0', '2023-01-01',
+ 'support.tickets, analytics.vw_sla_performance', 'tickets.opened_at_utc, tickets.resolved_at_utc',
+ 'SELECT AVG(CAST(actual_resolution_minutes AS DOUBLE PRECISION)) FROM analytics.vw_sla_performance WHERE actual_resolution_minutes IS NOT NULL;',
+ 'Excludes time spent in ''pending customer'' status for contractual purposes, though the stored value does not subtract it.'),
+
+('At-risk customer',
+ 'An active customer showing two or more of: an overdue invoice, three or more SLA breaches, three or more open tickets, fewer than five average active users over the last thirty days, or a health score below fifty.',
+ 'Use analytics.vw_customer_risk WHERE risk_signal_count >= 2. The individual signal_* columns explain which factors triggered it, so an answer can justify itself rather than asserting risk.',
+ 'Customer Success', '1.2', '2025-03-01',
+ 'analytics.vw_customer_risk, analytics.customer_health',
+ 'vw_customer_risk.risk_signal_count, signal_unpaid_invoice, signal_repeated_sla_breach, signal_low_usage',
+ 'SELECT customer_name, risk_signal_count FROM analytics.vw_customer_risk WHERE risk_signal_count >= 2 ORDER BY current_arr DESC;',
+ 'Excludes already-churned customers and customers in their first 30 days, whose usage has not ramped.'),
+
+('Product adoption',
+ 'The share of purchased seats that were actually used in the last 30 days, per customer and product.',
+ 'avg(core.usage_daily.active_users) over the last 30 days divided by core.subscriptions.seats for the matching product. Guard against division by zero with NULLIF.',
+ 'Customer Success', '1.0', '2024-01-01',
+ 'core.usage_daily, core.subscriptions', 'usage_daily.active_users, usage_daily.usage_date, subscriptions.seats',
+ 'SELECT customer_id, AVG(CAST(active_users AS DOUBLE PRECISION)) FROM core.usage_daily WHERE usage_date >= ((CAST(NOW() AS date)) + INTERVAL ''-30 day'') GROUP BY customer_id;',
+ 'Excludes service accounts and API-only integrations, which do not register as active users.')
+) AS v(term, definition, sql_guidance, owner, version, effective_date,
+       related_tables, related_columns, example_calculation, known_exclusions)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai.business_glossary g WHERE g.term = v.term AND g.version = v.version
+);
+
+/* A superseded definition, kept to prove version filtering works.
+   MRR v1.0 wrongly included trials; v2.0 excluded them. A question about the
+   *current* definition must not retrieve this row. */
+INSERT INTO ai.business_glossary
+    (term, definition, sql_guidance, owner, version, effective_date,
+     related_tables, related_columns, example_calculation, known_exclusions, is_current)
+SELECT 'MRR',
+       'SUPERSEDED (v1.0, in force 2023-01-01 to 2024-12-31). Monthly Recurring Revenue was previously defined as the normalised monthly value of ALL subscriptions including trials.',
+       'Historical only. Do not use for current reporting. Retained so that restatements of 2023-2024 figures can be reproduced.',
+       'Finance', '1.0', '2023-01-01',
+       'core.subscriptions', 'subscriptions.mrr_amount',
+       'Superseded by v2.0 on 2025-01-01.',
+       'This version did NOT exclude trials, which overstated MRR by roughly 4 percent.',
+       FALSE
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai.business_glossary g WHERE g.term = 'MRR' AND g.version = '1.0'
+);
+DO $$ BEGIN RAISE NOTICE '007: business glossary seeded.'; END $$;
+/* ===========================================================================
+   APPROVED SQL EXAMPLES
+
+   Few-shot examples are the highest-leverage input to Text-to-SQL accuracy --
+   higher than schema detail, higher than prompt wording. Each is human
+   verified. They are retrieved by similarity to the user's question, so the
+   model sees two or three relevant worked examples rather than all of them.
+   =========================================================================== */
+INSERT INTO ai.approved_sql_examples
+    (question, sql_text, category, tables_used, glossary_terms, verified_by, verified_on, notes)
+SELECT v.question, v.sql_text, v.category, v.tables_used, v.glossary_terms,
+       v.verified_by, CAST(v.verified_on AS DATE), v.notes
+FROM (VALUES
+('Which five customers have the highest ARR?',
+ 'SELECT customer_name, current_arr, segment, region
+FROM analytics.vw_customer_360
+WHERE customer_status = ''active''
+ORDER BY current_arr DESC
+    LIMIT 5
+;',
+ 'revenue', 'analytics.vw_customer_360', 'ARR, Active customer',
+ 'Revenue Operations', '2025-06-01',
+ 'Uses the curated view so ARR matches the official definition.'),
+
+('Calculate MRR using the official business definition.',
+ 'SELECT month_start, tenant_name, mrr, paying_customers
+FROM analytics.vw_monthly_recurring_revenue
+ORDER BY month_start DESC, tenant_name;',
+ 'revenue', 'analytics.vw_monthly_recurring_revenue', 'MRR',
+ 'Finance', '2025-06-01',
+ 'The view already excludes trials and normalises annual plans.'),
+
+('Why did churn increase in Q2?',
+ 'SELECT month_start, churned_customers, customers_at_start, churned_mrr,
+       contraction_mrr, expansion_mrr, new_business_mrr
+FROM analytics.vw_churn_metrics
+WHERE calendar_quarter = CONCAT(EXTRACT(YEAR FROM month_start)::int, ''-Q2'')
+ORDER BY month_start;',
+ 'churn', 'analytics.vw_churn_metrics', 'Revenue churn, Logo churn, Contraction revenue',
+ 'Revenue Operations', '2025-06-01',
+ 'Returns both logo and revenue churn plus the offsetting movements, so the answer can explain the cause rather than just the number.'),
+
+('Show customers with more than three SLA breaches.',
+ 'SELECT customer_name, segment, sla_breaches, current_arr
+FROM analytics.vw_customer_360
+WHERE sla_breaches > 3
+ORDER BY sla_breaches DESC, current_arr DESC;',
+ 'support', 'analytics.vw_customer_360', 'SLA breach',
+ 'Support Operations', '2025-06-01',
+ 'Strictly greater than three, matching the wording of the question.'),
+
+('Compare the contractual response time with the actual response time for a customer.',
+ 'SELECT ticket_number, priority, opened_at_utc, sla_version,
+       target_first_response_minutes, actual_first_response_minutes,
+       first_response_breached
+FROM analytics.vw_sla_performance
+WHERE customer_name = :customer_name
+ORDER BY opened_at_utc DESC;',
+ 'support', 'analytics.vw_sla_performance', 'SLA breach, First-response time',
+ 'Support Operations', '2025-06-01',
+ 'The view resolves the SLA version in force when the ticket was opened. Parameterised on customer_name.'),
+
+('Which customers are at risk according to usage, unpaid invoices and support tickets?',
+ 'SELECT customer_name, segment, current_arr, risk_signal_count,
+       signal_unpaid_invoice, signal_repeated_sla_breach,
+       signal_high_open_tickets, signal_low_usage, signal_low_health
+FROM analytics.vw_customer_risk
+WHERE risk_signal_count >= 2
+ORDER BY current_arr DESC;',
+ 'risk', 'analytics.vw_customer_risk', 'At-risk customer',
+ 'Customer Success', '2025-06-01',
+ 'Returns the individual signals so the answer can state why each customer is at risk.'),
+
+('What caused the June service incident and which customers were affected?',
+ 'SELECT incident_code, incident_title, severity, started_at_utc, resolved_at_utc,
+       total_duration_minutes, root_cause, postmortem_doc_id,
+       customer_name, impact_level, downtime_minutes, credit_amount
+FROM analytics.vw_incident_impact
+WHERE started_at_utc >= ''2025-06-01'' AND started_at_utc < ''2025-07-01''
+ORDER BY severity, downtime_minutes DESC;',
+ 'incident', 'analytics.vw_incident_impact', '',
+ 'Support Operations', '2025-06-01',
+ 'postmortem_doc_id lets the answer cite the postmortem document alongside the database facts.'),
+
+('How many active customers do we have per region?',
+ 'SELECT region, COUNT(*) AS active_customers, SUM(current_mrr) AS total_mrr
+FROM analytics.vw_customer_360
+WHERE customer_status = ''active'' AND active_subscriptions > 0
+GROUP BY region
+ORDER BY active_customers DESC;',
+ 'revenue', 'analytics.vw_customer_360', 'Active customer, MRR',
+ 'Revenue Operations', '2025-06-01',
+ 'Applies the full active-customer definition, not just status.'),
+
+('What is the total overdue amount by customer?',
+ 'SELECT customer_name, open_invoices, overdue_amount, current_arr
+FROM analytics.vw_customer_360
+WHERE overdue_amount > 0
+ORDER BY overdue_amount DESC;',
+ 'billing', 'analytics.vw_customer_360', 'Overdue invoice',
+ 'Finance', '2025-06-01',
+ 'Outstanding balance, not invoice total.'),
+
+('Which products have the lowest seat adoption?',
+ 'SELECT p.product_name,
+       AVG(CAST(u.active_users AS DOUBLE PRECISION)) AS avg_active_users,
+       AVG(CAST(s.seats AS DOUBLE PRECISION))        AS avg_seats_purchased,
+       AVG(CAST(u.active_users AS DOUBLE PRECISION)) / NULLIF(AVG(CAST(s.seats AS DOUBLE PRECISION)), 0) AS adoption_ratio
+FROM core.usage_daily u
+JOIN core.products p      ON p.product_id = u.product_id
+JOIN core.subscriptions s ON s.customer_id = u.customer_id AND s.status = ''active''
+WHERE u.usage_date >= ((CAST(NOW() AS date)) + INTERVAL ''-30 day'')
+GROUP BY p.product_name
+ORDER BY adoption_ratio;',
+ 'usage', 'core.usage_daily, core.products, core.subscriptions', 'Product adoption',
+ 'Customer Success', '2025-06-01',
+ 'NULLIF guards the division. Base tables are used because no curated adoption view exists yet.')
+) AS v(question, sql_text, category, tables_used, glossary_terms, verified_by, verified_on, notes)
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai.approved_sql_examples e WHERE e.question = v.question
+);
+
+INSERT INTO ai.schema_version (schema_version, script_name, notes)
+SELECT '1.0.0', '007_seed_reference_data.sql', 'Reference data, glossary and approved SQL examples seeded.'
+WHERE NOT EXISTS (
+    SELECT 1 FROM ai.schema_version WHERE script_name = '007_seed_reference_data.sql'
+);
+DO $$ BEGIN RAISE NOTICE '007_seed_reference_data.sql complete.'; END $$;

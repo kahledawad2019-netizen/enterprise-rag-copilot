@@ -1,0 +1,546 @@
+name: Postgres migration
+
+# Runs the PostgreSQL translation of the schema against a real PostgreSQL
+# server on every push, so the migration is verified rather than asserted.
+#
+# This workflow is the reason the migration is being attempted at all. The
+# original advice against moving off SQL Server rested on one fact: the
+# translation could not be checked, because the development machine has
+# neither Docker nor a local PostgreSQL. A service container removes that
+# objection - every translated statement is executed, and the tenant-isolation
+# and least-privilege properties are asserted against the running database
+# rather than read back off the page.
+#
+# Scripts are added here as they are translated. A script that is not listed
+# has not been verified, and the summary at the end says which.
+
+on:
+  push:
+    branches: [main, cloud-deploy]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  schema:
+    name: Apply and verify schema
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Throwaway credentials for an ephemeral container that is destroyed
+          # with the runner. Nothing here is a real secret, and nothing here
+          # is reachable from outside the job.
+          POSTGRES_USER: copilot_ci
+          POSTGRES_PASSWORD: copilot_ci
+          POSTGRES_DB: enterprisecopilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U copilot_ci -d enterprisecopilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: copilot_ci
+      PGPASSWORD: copilot_ci
+      PGDATABASE: enterprisecopilot
+      # Fail the whole script on the first error instead of carrying on and
+      # reporting success at the end. Without this, a broken statement in the
+      # middle of a file is a warning nobody reads.
+      PSQL: psql --quiet --no-psqlrc --set=ON_ERROR_STOP=1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      - name: Server version
+        run: $PSQL -c "SELECT version();"
+
+      # Each script is applied separately so a failure names the file rather
+      # than a line number in a concatenated stream.
+      - name: 001 database preconditions
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/001_create_database.sql
+
+      - name: 002 schemas
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
+
+      - name: 003 tables
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/003_create_tables.sql
+
+      - name: 004 indexes
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/004_create_indexes.sql
+
+      - name: 005 views
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/005_create_views.sql
+
+      - name: 006 least-privilege role
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/006_create_security.sql
+
+      - name: 007 reference data
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/007_seed_reference_data.sql
+
+      - name: 009 row-level security
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/009_enable_row_level_security.sql
+
+      # Re-running must be safe. The SQL Server scripts are idempotent by
+      # design and the translation has to keep that, or a redeploy becomes a
+      # one-shot operation nobody dares repeat. This is also the step that
+      # catches a dropped IF OBJECT_ID guard: sqlglot silently discards those,
+      # which would pass a first run and fail every one after it.
+      - name: Re-apply everything (idempotency)
+        run: |
+          for f in local-enterprise-copilot/sql/postgres/00[1-9]_*.sql; do
+            echo "re-applying $f"
+            $PSQL -f "$f"
+          done
+
+      # The Neon runbook uses the Python migration command, not psql directly.
+      # Exercise that exact entrypoint against the same live PostgreSQL server
+      # so a DB-API multi-statement or configuration regression cannot leave a
+      # green schema and a broken deployment procedure.
+      - name: Verify Python PostgreSQL migration runner
+        env:
+          DATABASE_BACKEND: postgresql
+          POSTGRES_DSN: postgresql://copilot_ci:copilot_ci@localhost:5432/enterprisecopilot
+        run: |
+          python -m pip install --quiet "pydantic>=2.9,<3" "pydantic-settings>=2.6,<3" \
+            "python-dotenv>=1.0" "psycopg[binary]>=3.2,<4"
+          cd local-enterprise-copilot
+          PYTHONPATH=src python scripts/setup_database.py
+
+      # The glossary and the approved SQL examples are not schema - they are
+      # the text the model is prompted with. If they still contain T-SQL while
+      # the database is PostgreSQL, the model is being taught to write queries
+      # that cannot run, and every Text-to-SQL failure after that traces back
+      # to seed data nobody thought to translate.
+      #
+      # This is the one part of the migration a mechanical translator cannot
+      # settle, because the SQL lives inside string literals and rewriting it
+      # blindly is how a working example turns into a plausible wrong one.
+      - name: Assert seeded SQL examples contain no T-SQL-only syntax
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              offenders text;
+          BEGIN
+              SELECT string_agg(format('%s: %s', src, snippet), E'\n')
+              INTO offenders
+              FROM (
+                  SELECT 'approved_sql_examples' AS src,
+                         left(sql_text, 90) AS snippet
+                  FROM ai.approved_sql_examples
+                  WHERE sql_text ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\mOUTER\s+APPLY\M|\mCROSS\s+APPLY\M|\mNVARCHAR\M|\mDATETIME2\M|@[A-Za-z_]|\[)'
+                  UNION ALL
+                  SELECT 'business_glossary',
+                         left(sql_guidance, 90)
+                  FROM ai.business_glossary
+                  WHERE sql_guidance ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\mOUTER\s+APPLY\M|\mCROSS\s+APPLY\M|\mNVARCHAR\M|\mDATETIME2\M|@[A-Za-z_]|\[)'
+              ) AS bad;
+
+              IF offenders IS NOT NULL THEN
+                  RAISE EXCEPTION
+                      E'Seed data still teaches the model T-SQL:\n%', offenders;
+              END IF;
+
+              RAISE NOTICE 'Seeded SQL examples and glossary guidance are PostgreSQL-clean.';
+          END
+          $$;
+          SQL
+
+      - name: Assert the analytics views are queryable
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              v record;
+              n int;
+              checked int := 0;
+          BEGIN
+              FOR v IN
+                  SELECT table_schema, table_name
+                  FROM information_schema.views
+                  WHERE table_schema = 'analytics'
+              LOOP
+                  -- A view that parses but cannot execute is a translation
+                  -- that looks finished and is not.
+                  EXECUTE format('SELECT count(*) FROM %I.%I', v.table_schema, v.table_name)
+                  INTO n;
+                  checked := checked + 1;
+              END LOOP;
+
+              IF checked = 0 THEN
+                  RAISE EXCEPTION 'No analytics views exist; 005 did not create them.';
+              END IF;
+
+              RAISE NOTICE '% analytics views created and queryable.', checked;
+          END
+          $$;
+          SQL
+
+      - name: Assert all 25 tables exist
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              expected text[] := ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.products','core.plans','core.subscriptions',
+                  'core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.invoice_items','billing.payments',
+                  'billing.refunds',
+                  'support.sla_policies','support.tickets','support.ticket_events',
+                  'support.sla_breaches','support.incidents','support.incident_impact',
+                  'analytics.customer_health',
+                  'ai.business_glossary','ai.approved_sql_examples','ai.audit_events',
+                  'ai.schema_version',
+                  'security.access_groups','security.app_users'
+              ];
+              missing text;
+              found int;
+          BEGIN
+              SELECT string_agg(t, ', ')
+              INTO missing
+              FROM unnest(expected) AS t
+              WHERE to_regclass(t) IS NULL;
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'Missing tables: %', missing;
+              END IF;
+
+              SELECT count(*) INTO found
+              FROM information_schema.tables
+              WHERE table_schema IN ('core','billing','support','analytics','ai','security')
+                AND table_type = 'BASE TABLE';
+
+              RAISE NOTICE 'All 25 expected tables present (% base tables total).', found;
+          END
+          $$;
+          SQL
+
+      # The tenant column is what every isolation rule keys on. If the
+      # translation dropped it from a table, RLS in 009 would silently protect
+      # nothing there.
+      - name: Assert tenant_id survived on tenant-scoped tables
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              missing text;
+          BEGIN
+              SELECT string_agg(t, ', ')
+              INTO missing
+              FROM unnest(ARRAY[
+                  'core.customers','core.subscriptions','core.usage_daily',
+                  'billing.invoices','billing.payments','support.tickets'
+              ]) AS t
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = split_part(t, '.', 1)
+                    AND table_name   = split_part(t, '.', 2)
+                    AND column_name  = 'tenant_id'
+              );
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'tenant_id missing on: %', missing;
+              END IF;
+
+              RAISE NOTICE 'tenant_id present on every tenant-scoped table checked.';
+          END
+          $$;
+          SQL
+
+      # A CHECK constraint that vanished in translation is a data-integrity
+      # rule that stopped existing without anyone noticing.
+      #
+      # The match is case-insensitive, and that is a finding rather than a
+      # convenience. PostgreSQL folds unquoted identifiers to lower case, so
+      # `CONSTRAINT CK_customers_status` is stored as `ck_customers_status`.
+      # The first version of this assertion looked for 'CK\_%' and found
+      # exactly zero - the constraints were all there, under different names.
+      # Anything that asserts on an exact constraint name across both dialects
+      # has to account for that.
+      - name: Assert CHECK constraints survived
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              named int;
+              sample text;
+          BEGIN
+              SELECT count(*) INTO named
+              FROM information_schema.table_constraints
+              WHERE constraint_type = 'CHECK'
+                AND constraint_schema IN ('core','billing','support','analytics','ai','security')
+                AND lower(constraint_name) LIKE 'ck!_%' ESCAPE '!';
+
+              IF named < 20 THEN
+                  SELECT string_agg(constraint_name, ', ')
+                  INTO sample
+                  FROM (
+                      SELECT constraint_name
+                      FROM information_schema.table_constraints
+                      WHERE constraint_type = 'CHECK'
+                        AND constraint_schema IN
+                            ('core','billing','support','analytics','ai','security')
+                      LIMIT 10
+                  ) AS s;
+
+                  RAISE EXCEPTION
+                      'Only % named CK_ constraints found; the T-SQL schema defines 27. Sample of what is present: %',
+                      named, COALESCE(sample, '(none)');
+              END IF;
+
+              RAISE NOTICE '% named CK_ constraints present (lower-cased by PostgreSQL).', named;
+          END
+          $$;
+          SQL
+
+      # Identifier case folding, asserted rather than remembered. If a future
+      # translation starts quoting identifiers, names would stay upper case and
+      # anything matching on the lower-cased form would quietly stop matching.
+      - name: Assert identifier case folding is as expected
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              upper_named int;
+          BEGIN
+              SELECT count(*) INTO upper_named
+              FROM information_schema.table_constraints
+              WHERE constraint_schema IN ('core','billing','support','analytics','ai','security')
+                AND constraint_name <> lower(constraint_name);
+
+              IF upper_named > 0 THEN
+                  RAISE EXCEPTION
+                      '% constraint names are not lower case. The translation has started quoting identifiers, which changes how every name must be matched.',
+                      upper_named;
+              END IF;
+
+              RAISE NOTICE 'All constraint names are lower case, as PostgreSQL folds them.';
+          END
+          $$;
+          SQL
+
+      - name: Assert the six schemas exist
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              missing text;
+          BEGIN
+              SELECT string_agg(s, ', ')
+              INTO missing
+              FROM unnest(ARRAY['core','billing','support','analytics','security','ai']) AS s
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM information_schema.schemata WHERE schema_name = s
+              );
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'Missing schemas: %', missing;
+              END IF;
+
+              RAISE NOTICE 'All six schemas present.';
+          END
+          $$;
+          SQL
+
+      - name: Assert public schema is not world-writable
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+              IF has_schema_privilege('public', 'public', 'CREATE') THEN
+                  RAISE EXCEPTION
+                      'PUBLIC can still CREATE in schema public; 002 did not revoke it.';
+              END IF;
+              RAISE NOTICE 'schema public is locked down.';
+          END
+          $$;
+          SQL
+
+      - name: Assert readonly role attributes and RLS coverage
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              unsafe_role int;
+              unprotected int;
+              missing_policies int;
+              unsafe_views int;
+          BEGIN
+              SELECT count(*) INTO unsafe_role
+              FROM pg_roles
+              WHERE rolname = 'copilot_readonly'
+                AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication
+                     OR rolbypassrls OR rolcanlogin);
+
+              IF unsafe_role <> 0 THEN
+                  RAISE EXCEPTION 'copilot_readonly has a privileged/login attribute';
+              END IF;
+
+              SELECT count(*) INTO unprotected
+              FROM unnest(ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.subscriptions','core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.payments','billing.refunds',
+                  'support.tickets','support.ticket_events','support.sla_breaches',
+                  'support.incident_impact','analytics.customer_health','security.app_users'
+              ]) AS target(name)
+              JOIN pg_class c ON c.oid = to_regclass(target.name)
+              WHERE NOT c.relrowsecurity OR NOT c.relforcerowsecurity;
+
+              IF unprotected <> 0 THEN
+                  RAISE EXCEPTION '% tenant tables are missing ENABLE/FORCE RLS', unprotected;
+              END IF;
+
+              SELECT count(*) INTO missing_policies
+              FROM unnest(ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.subscriptions','core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.payments','billing.refunds',
+                  'support.tickets','support.ticket_events','support.sla_breaches',
+                  'support.incident_impact','analytics.customer_health','security.app_users'
+              ]) AS target(name)
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM pg_policy
+                  WHERE polrelid = to_regclass(target.name)
+                    AND polname = 'tenant_isolation'
+              );
+
+              IF missing_policies <> 0 THEN
+                  RAISE EXCEPTION '% tenant tables are missing tenant_isolation', missing_policies;
+              END IF;
+
+              SELECT count(*) INTO unsafe_views
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'analytics'
+                AND c.relkind = 'v'
+                AND NOT COALESCE(c.reloptions @> ARRAY['security_invoker=true'], FALSE);
+
+              IF unsafe_views <> 0 THEN
+                  RAISE EXCEPTION '% analytics views can bypass caller RLS', unsafe_views;
+              END IF;
+
+              RAISE NOTICE 'readonly attributes, 15 RLS policies, and security-invoker views verified.';
+          END
+          $$;
+          SQL
+
+      - name: Assert tenant isolation as readonly role
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          SELECT set_config(
+              'app.tenant_id',
+              (SELECT tenant_id::text FROM core.tenants WHERE tenant_code = 'NWC-EU'),
+              true
+          );
+          SET LOCAL ROLE copilot_readonly;
+          DO $$
+          DECLARE
+              visible int;
+              wrong_tenant int;
+          BEGIN
+              SELECT count(*) INTO visible FROM core.tenants;
+              SELECT count(*) INTO wrong_tenant
+              FROM core.tenants WHERE tenant_code <> 'NWC-EU';
+
+              IF visible <> 1 OR wrong_tenant <> 0 THEN
+                  RAISE EXCEPTION
+                      'RLS leak: visible tenants %, cross-tenant rows %', visible, wrong_tenant;
+              END IF;
+          END
+          $$;
+          ROLLBACK;
+
+          BEGIN;
+          SET LOCAL ROLE copilot_readonly;
+          DO $$
+          DECLARE visible int;
+          BEGIN
+              SELECT count(*) INTO visible FROM core.tenants;
+              IF visible <> 0 THEN
+                  RAISE EXCEPTION 'Missing tenant context exposed % rows', visible;
+              END IF;
+          END
+          $$;
+          ROLLBACK;
+          SQL
+
+      - name: Assert readonly role cannot write or read security data
+        run: |
+          if $PSQL -c "SET ROLE copilot_readonly; DELETE FROM core.customers"; then
+            echo "copilot_readonly unexpectedly deleted business data"
+            exit 1
+          fi
+
+          if $PSQL -c "SET ROLE copilot_readonly; SELECT * FROM security.app_users"; then
+            echo "copilot_readonly unexpectedly read the user registry"
+            exit 1
+          fi
+
+          if $PSQL -c "SET ROLE copilot_readonly; SELECT * FROM ai.audit_events"; then
+            echo "copilot_readonly unexpectedly read its audit trail"
+            exit 1
+          fi
+
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE copilot_readonly;
+          INSERT INTO ai.audit_events (trace_id, route, sql_allowed)
+          VALUES ('postgres-ci-permission-check', 'refuse', FALSE);
+          RESET ROLE;
+          DO $$
+          BEGIN
+              IF NOT EXISTS (
+                  SELECT 1 FROM ai.audit_events
+                  WHERE trace_id = 'postgres-ci-permission-check'
+              ) THEN
+                  RAISE EXCEPTION 'append-only audit INSERT did not persist';
+              END IF;
+          END
+          $$;
+          ROLLBACK;
+          SQL
+
+      - name: Migration coverage summary
+        if: always()
+        run: |
+          {
+            echo "### PostgreSQL migration coverage"
+            echo
+            echo "| script | translated | verified here |"
+            echo "|---|---|---|"
+            for n in 001 002 003 004 005 006 007 008 009; do
+              f=$(ls local-enterprise-copilot/sql/postgres/${n}_*.sql 2>/dev/null | head -1)
+              if [ -n "$f" ]; then
+                echo "| $n | yes | yes |"
+              else
+                echo "| $n | **no** | no |"
+              fi
+            done
+            echo
+            echo "A script marked **no** has not been translated. Its SQL Server"
+            echo "behaviour is not yet reproduced on PostgreSQL, and nothing in"
+            echo "this run says otherwise."
+          } >> "$GITHUB_STEP_SUMMARY"

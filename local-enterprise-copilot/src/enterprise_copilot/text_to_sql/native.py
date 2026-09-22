@@ -44,6 +44,23 @@ otherwise make about what a metric means.
 - Output raw SQL only: no explanation, no markdown fences, no commentary."""
 
 
+POSTGRES_SYSTEM_PROMPT = """You write PostgreSQL queries. You output SQL and nothing else.
+
+RULES
+- Output exactly ONE SELECT statement. Never INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, \
+MERGE, TRUNCATE, COPY, CALL or DO.
+- Always schema-qualify: analytics.vw_customer_360, not customers.
+- Use LIMIT n, never SQL Server TOP syntax or square-bracket identifiers.
+- Prefer the analytics views. They already encode the official business definitions; \
+recomputing a metric from base tables is how the wrong number gets produced.
+- Follow the BUSINESS DEFINITIONS exactly. They override any assumption you would \
+otherwise make about what a metric means.
+- Use only the tables and columns given in the SCHEMA section. Never invent a column.
+- Only SUM() or AVG() a NUMERIC column. Identifier columns are text: use COUNT(), never SUM().
+- Guard division with NULLIF to avoid divide-by-zero.
+- Output raw SQL only: no explanation, no markdown fences, no commentary."""
+
+
 USER_PROMPT = """SCHEMA
 {schema}
 
@@ -97,6 +114,25 @@ WHAT IS WRONG:
 Rewrite the query so it is correct. Output only the corrected T-SQL SELECT, nothing else."""
 
 
+POSTGRES_REPAIR_PROMPT = """The PostgreSQL query you produced cannot run. Fix it.
+
+YOUR SQL:
+{sql}
+
+WHAT IS WRONG:
+{problems}
+
+Rewrite the query so it is correct. Output only the corrected PostgreSQL SELECT, nothing else."""
+
+
+def system_prompt_for(settings: Settings) -> str:
+    return POSTGRES_SYSTEM_PROMPT if settings.sql_dialect == "postgres" else SYSTEM_PROMPT
+
+
+def repair_prompt_for(settings: Settings) -> str:
+    return POSTGRES_REPAIR_PROMPT if settings.sql_dialect == "postgres" else REPAIR_PROMPT
+
+
 class NativeTextToSQLProvider(TextToSQLProvider):
     name = "native"
 
@@ -117,7 +153,7 @@ class NativeTextToSQLProvider(TextToSQLProvider):
             response = self._client.chat(
                 model=self.settings.chat_model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt_for(self.settings)},
                     {"role": "user", "content": prompt},
                 ],
                 options={
@@ -171,7 +207,7 @@ class NativeTextToSQLProvider(TextToSQLProvider):
                 tenant_id=request.tenant_id, exempt_objects=exempt_list
             )
 
-        return USER_PROMPT.format(
+        rendered = USER_PROMPT.format(
             schema=context.render_schema(),
             relationships=context.render_relationships(),
             glossary=context.render_glossary(),
@@ -179,6 +215,12 @@ class NativeTextToSQLProvider(TextToSQLProvider):
             tenant_rule=tenant_rule,
             question=context.question,
         )
+        if self.settings.sql_dialect == "postgres":
+            rendered = rendered.replace(
+                "Write the T-SQL SELECT that answers it.",
+                "Write the PostgreSQL SELECT that answers it.",
+            )
+        return rendered
 
     def _repair(self, sql: str, problems: list[str]) -> str:
         """One corrective pass, with the specific problem fed back."""
@@ -186,10 +228,10 @@ class NativeTextToSQLProvider(TextToSQLProvider):
             response = self._client.chat(
                 model=self.settings.chat_model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt_for(self.settings)},
                     {
                         "role": "user",
-                        "content": REPAIR_PROMPT.format(
+                        "content": repair_prompt_for(self.settings).format(
                             sql=sql,
                             problems="\n".join(f"- {p}" for p in problems),
                         ),
@@ -235,7 +277,7 @@ class NativeTextToSQLProvider(TextToSQLProvider):
 # ---------------------------------------------------------------------------
 # SQL extraction
 # ---------------------------------------------------------------------------
-FENCED = re.compile(r"```(?:sql|tsql)?\s*(.+?)```", re.DOTALL | re.IGNORECASE)
+FENCED = re.compile(r"```(?:sql|tsql|postgresql)?\s*(.+?)```", re.DOTALL | re.IGNORECASE)
 STATEMENT_START = re.compile(r"\b(WITH|SELECT)\b", re.IGNORECASE)
 
 
@@ -269,4 +311,10 @@ def extract_sql(response: str) -> str:
     return candidate
 
 
-__all__ = ["SQL_PROMPT_VERSION", "NativeTextToSQLProvider", "extract_sql"]
+__all__ = [
+    "SQL_PROMPT_VERSION",
+    "NativeTextToSQLProvider",
+    "extract_sql",
+    "repair_prompt_for",
+    "system_prompt_for",
+]

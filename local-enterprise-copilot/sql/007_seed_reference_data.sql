@@ -200,7 +200,8 @@ INSERT INTO ai.business_glossary
     (term, definition, sql_guidance, owner, version, effective_date,
      related_tables, related_columns, example_calculation, known_exclusions, is_current)
 SELECT v.term, v.definition, v.sql_guidance, v.owner, v.version, v.effective_date,
-       v.related_tables, v.related_columns, v.example_calculation, v.known_exclusions, 1
+       v.related_tables, v.related_columns, v.example_calculation, v.known_exclusions,
+       CAST(1 AS BIT)
 FROM (VALUES
 (N'MRR',
  N'Monthly Recurring Revenue. The normalised monthly value of all paid, non-trial subscriptions that were active at any point during the month. Annual contracts are divided across the twelve months they cover rather than recognised in the month they are billed.',
@@ -378,7 +379,7 @@ SELECT N'MRR',
        N'core.subscriptions', N'subscriptions.mrr_amount',
        N'Superseded by v2.0 on 2025-01-01.',
        N'This version did NOT exclude trials, which overstated MRR by roughly 4 percent.',
-       0
+       CAST(0 AS BIT)
 WHERE NOT EXISTS (
     SELECT 1 FROM ai.business_glossary g WHERE g.term = N'MRR' AND g.version = '1.0'
 );

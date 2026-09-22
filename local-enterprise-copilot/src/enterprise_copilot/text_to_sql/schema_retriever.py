@@ -86,11 +86,17 @@ class TableInfo:
         kind = "curated analytics view" if self.is_view else "base table"
         return f"{self.schema} {self.name} {kind} {column_names}"
 
-    def to_ddl(self, *, max_columns: int = 40) -> str:
-        lines = [f"CREATE {'VIEW' if self.is_view else 'TABLE'} [{self.schema}].[{self.name}] ("]
+    def to_ddl(self, *, max_columns: int = 40, dialect: str = "tsql") -> str:
+        def quote(identifier: str) -> str:
+            return identifier if dialect == "postgres" else f"[{identifier}]"
+
+        lines = [
+            f"CREATE {'VIEW' if self.is_view else 'TABLE'} "
+            f"{quote(self.schema)}.{quote(self.name)} ("
+        ]
         for column in self.columns[:max_columns]:
             nullable = "NULL" if column["nullable"] else "NOT NULL"
-            lines.append(f"  [{column['name']}] {column['type']} {nullable},")
+            lines.append(f"  {quote(column['name'])} {column['type']} {nullable},")
         if len(self.columns) > max_columns:
             lines.append(f"  -- ... {len(self.columns) - max_columns} more columns")
         if lines[-1].endswith(","):
@@ -109,12 +115,13 @@ class SQLContext:
     glossary: list[dict[str, str]] = field(default_factory=list)
     examples: list[dict[str, str]] = field(default_factory=list)
     tenant_id: int | None = None
+    dialect: str = "tsql"
 
     def table_names(self) -> list[str]:
         return [t.qualified for t in self.tables]
 
     def render_schema(self) -> str:
-        return "\n\n".join(t.to_ddl() for t in self.tables)
+        return "\n\n".join(t.to_ddl(dialect=self.dialect) for t in self.tables)
 
     def render_relationships(self) -> str:
         return "\n".join(f"- {r}" for r in self.relationships) if self.relationships else "(none)"
@@ -148,7 +155,7 @@ class SchemaRetriever:
 
     @property
     def cache_path(self) -> Path:
-        return self.settings.manifests_dir / "schema_catalog.json"
+        return self.settings.manifests_dir / f"schema_catalog_{self.settings.sql_dialect}.json"
 
     # -- catalog -----------------------------------------------------------
     def load_catalog(self, *, refresh: bool = False) -> list[TableInfo]:
@@ -173,13 +180,13 @@ class SchemaRetriever:
         return self._catalog
 
     def _read_from_database(self) -> tuple[list[TableInfo], list[str]]:
-        placeholders = ", ".join("?" for _ in VISIBLE_SCHEMAS)
+        marker = "%s" if self.settings.database_backend == "postgresql" else "?"
+        placeholders = ", ".join(marker for _ in VISIBLE_SCHEMAS)
         tables: dict[str, TableInfo] = {}
 
         with raw_connection(self.settings) as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                f"""
+            catalog_sql = f"""
                 SELECT t.TABLE_SCHEMA, t.TABLE_NAME, t.TABLE_TYPE,
                        c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH,
                        c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.IS_NULLABLE,
@@ -189,9 +196,11 @@ class SchemaRetriever:
                   ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
                 WHERE t.TABLE_SCHEMA IN ({placeholders})
                 ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
-                """,
-                *VISIBLE_SCHEMAS,
-            )
+                """
+            if self.settings.database_backend == "postgresql":
+                cursor.execute(catalog_sql, VISIBLE_SCHEMAS)
+            else:
+                cursor.execute(catalog_sql, *VISIBLE_SCHEMAS)
             for row in cursor.fetchall():
                 (schema, name, kind, column, dtype, length, precision, scale, nullable, _) = row
                 key = f"{schema}.{name}"
@@ -214,8 +223,25 @@ class SchemaRetriever:
                     }
                 )
 
-            cursor.execute(
-                """
+            if self.settings.database_backend == "postgresql":
+                cursor.execute(
+                    """
+                    SELECT tc.table_schema, tc.table_name, kcu.column_name,
+                           ccu.table_schema, ccu.table_name, ccu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_schema = tc.constraint_schema
+                     AND kcu.constraint_name = tc.constraint_name
+                    JOIN information_schema.constraint_column_usage ccu
+                      ON ccu.constraint_schema = tc.constraint_schema
+                     AND ccu.constraint_name = tc.constraint_name
+                    WHERE tc.constraint_type = 'FOREIGN KEY'
+                      AND tc.table_schema IN ('core','billing','support','analytics')
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
                 SELECT sp.name, tp.name, cp.name, sr.name, tr.name, cr.name
                 FROM sys.foreign_keys fk
                 JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
@@ -225,11 +251,11 @@ class SchemaRetriever:
                 JOIN sys.tables  tr ON tr.object_id = fkc.referenced_object_id
                 JOIN sys.schemas sr ON sr.schema_id = tr.schema_id
                 JOIN sys.columns cr ON cr.object_id = tr.object_id AND cr.column_id = fkc.referenced_column_id
-                """
-            )
+                    """
+                )
             relationships = []
             for ps, pt, pc, rs, rt, rc in cursor.fetchall():
-                relationships.append(f"[{ps}].[{pt}].[{pc}] = [{rs}].[{rt}].[{rc}]")
+                relationships.append(f"{ps}.{pt}.{pc} = {rs}.{rt}.{rc}")
                 key = f"{ps}.{pt}"
                 if key in tables:
                     tables[key].foreign_keys.append({"column": pc, "references": f"{rs}.{rt}.{rc}"})
@@ -351,7 +377,7 @@ class SchemaRetriever:
         return [
             r
             for r in relationships
-            if any(f"[{n.split('.')[0]}].[{n.split('.')[1]}]" in r for n in names)
+            if any(f"{n}." in r for n in names)
         ]
 
     # -- glossary and examples ---------------------------------------------
@@ -370,8 +396,13 @@ class SchemaRetriever:
                 SELECT term, definition, sql_guidance, version, known_exclusions,
                        related_tables
                 FROM ai.business_glossary
-                WHERE is_current = 1
+                WHERE is_current = {current_literal}
                 """
+                .format(
+                    current_literal=(
+                        "TRUE" if self.settings.database_backend == "postgresql" else "1"
+                    )
+                )
             )
             rows = cursor.fetchall()
 
@@ -409,8 +440,13 @@ class SchemaRetriever:
                 """
                 SELECT question, sql_text, category, tables_used
                 FROM ai.approved_sql_examples
-                WHERE is_active = 1
+                WHERE is_active = {active_literal}
                 """
+                .format(
+                    active_literal=(
+                        "TRUE" if self.settings.database_backend == "postgresql" else "1"
+                    )
+                )
             )
             rows = cursor.fetchall()
 
@@ -444,6 +480,7 @@ class SchemaRetriever:
             glossary=self.select_glossary(question),
             examples=self.select_examples(question),
             tenant_id=tenant_id,
+            dialect=self.settings.sql_dialect,
         )
 
 

@@ -9,8 +9,8 @@ import type { HealthResponse, MetaResponse } from "../types";
  * A health endpoint that returns `{ok: false}` tells an operator that
  * something is wrong and nothing about which of a dozen environment variables
  * to change. This screen maps each failing check to the specific fix, because
- * the gap between "database: false" and "set MSSQL_SERVER to your Azure
- * hostname" is where deployments stall.
+ * the gap between "database: false" and "set the Neon POSTGRES_DSN secret"
+ * is where deployments stall.
  *
  * `data_locality` is deliberately given its own panel rather than sitting in
  * the list. It is not a failure - it is a disclosure, and burying a
@@ -33,11 +33,11 @@ const REMEDIES: Record<string, { title: string; body: string; fix?: string }> = 
     fix: "python scripts/build_index.py --rebuild",
   },
   database: {
-    title: "SQL Server is not reachable",
+    title: "PostgreSQL is not reachable",
     body:
       "Document questions still work; anything needing data does not. Check the host, that the " +
-      "firewall allows this container, and that TRUST_SERVER_CERTIFICATE is false for Azure.",
-    fix: "MSSQL_SERVER=yourserver.database.windows.net  MSSQL_AUTH_MODE=sql",
+      "Neon project is active, and that the application DSN uses the read-only copilot_app role.",
+    fix: "DATABASE_BACKEND=postgresql  POSTGRES_DSN=postgresql://copilot_app:…@…/…?sslmode=require",
   },
   chat_model: {
     title: "No model to generate with",

@@ -134,6 +134,46 @@ class DatabaseSettings(BaseSettings):
         )
 
 
+class PostgresSettings(BaseSettings):
+    """PostgreSQL/Neon connection settings.
+
+    The DSN is secret because it normally embeds the database password. It is
+    deliberately separate from the SQL Server settings so local SSMS users do
+    not have to change their existing configuration.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="POSTGRES_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    dsn: SecretStr | None = None
+    connect_timeout: int = 30
+
+    @field_validator("dsn", mode="before")
+    @classmethod
+    def _blank_dsn_is_none(cls, value: object) -> object:
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        return None if isinstance(value, str) and not value.strip() else value
+
+    def connection_dsn(self) -> str:
+        if self.dsn is None:
+            raise ValueError("POSTGRES_DSN is required when DATABASE_BACKEND=postgresql")
+        return self.dsn.get_secret_value()
+
+    def sqlalchemy_url(self) -> str:
+        dsn = self.connection_dsn()
+        if dsn.startswith("postgres://"):
+            dsn = "postgresql://" + dsn.removeprefix("postgres://")
+        if dsn.startswith("postgresql://"):
+            return "postgresql+psycopg://" + dsn.removeprefix("postgresql://")
+        return dsn
+
+
 class OllamaSettings(BaseSettings):
     """Local inference runtime. No cloud provider is ever contacted."""
 
@@ -477,6 +517,9 @@ class Settings(BaseSettings):
     profile_name: ProfileName = Field(default=ProfileName.STANDARD, alias="COPILOT_PROFILE")
     demo_mode: bool = Field(default=False, alias="COPILOT_DEMO_MODE")
     random_seed: int = Field(default=20240601, alias="COPILOT_SEED")
+    database_backend: Literal["sqlserver", "postgresql"] = Field(
+        default="sqlserver", alias="DATABASE_BACKEND"
+    )
 
     project_root: Path = PROJECT_ROOT
     documents_dir: Path = PROJECT_ROOT / "data" / "documents"
@@ -492,6 +535,7 @@ class Settings(BaseSettings):
     )(resolve_path)
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    postgres: PostgresSettings = Field(default_factory=PostgresSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
@@ -505,6 +549,16 @@ class Settings(BaseSettings):
     @property
     def profile(self) -> ModelProfile:
         return get_profile(self.profile_name)
+
+    @model_validator(mode="after")
+    def _require_selected_database_configuration(self) -> Settings:
+        if self.database_backend == "postgresql" and self.postgres.dsn is None:
+            raise ValueError("DATABASE_BACKEND=postgresql requires POSTGRES_DSN")
+        return self
+
+    @property
+    def sql_dialect(self) -> Literal["tsql", "postgres"]:
+        return "postgres" if self.database_backend == "postgresql" else "tsql"
 
     @property
     def chat_model(self) -> str:
@@ -546,9 +600,22 @@ class Settings(BaseSettings):
             "embedding_model": self.embedding_model,
             "reranker": self.profile.reranker_model or "(disabled)",
             "ollama_host": self.ollama.host,
-            "sql_server": self.database.server,
-            "database": self.database.database,
-            "sql_auth": self.database.auth_mode,
+            "database_backend": self.database_backend,
+            "database_endpoint": (
+                "PostgreSQL (secret DSN)"
+                if self.database_backend == "postgresql"
+                else self.database.server
+            ),
+            "database": (
+                "PostgreSQL"
+                if self.database_backend == "postgresql"
+                else self.database.database
+            ),
+            "sql_auth": (
+                "dsn"
+                if self.database_backend == "postgresql"
+                else self.database.auth_mode
+            ),
             "vector_store": f"qdrant:{self.vector_store.mode}",
             "index_version": self.vector_store.index_version,
             "demo_mode": str(self.demo_mode),
@@ -584,6 +651,7 @@ __all__ = [
     "DatabaseSettings",
     "ObservabilitySettings",
     "OllamaSettings",
+    "PostgresSettings",
     "RetrievalSettings",
     "SecuritySettings",
     "Settings",

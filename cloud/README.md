@@ -1,5 +1,12 @@
 # Cloudflare deployment
 
+> **Current database plan:** the Azure SQL sections below are retained as
+> historical design notes and are no longer the deployment procedure. The
+> verified free-tier path is Neon PostgreSQL; follow
+> [NEON-DEPLOYMENT.md](NEON-DEPLOYMENT.md). PostgreSQL migrations `001`-`009`,
+> least privilege, forced RLS, tenant isolation, and security-invoker views are
+> executed in CI against PostgreSQL 16.
+
 Deploys the Enterprise Intelligence Copilot as a public service: a React UI on
 Cloudflare Pages, an API gateway on Cloudflare Workers, and the existing Python
 brain in a container.

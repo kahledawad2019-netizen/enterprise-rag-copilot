@@ -1,5 +1,5 @@
 """
-Bulk-load generated data into SQL Server.
+Bulk-load generated data into SQL Server or PostgreSQL.
 
 The generator works with list indexes (`_customer_index`) rather than database
 keys, because the keys do not exist until the rows are inserted. This module
@@ -39,10 +39,12 @@ DELETE_ORDER = [
 
 
 class SyntheticLoader:
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any, *, dialect: str = "tsql") -> None:
         self.conn = connection
         self.cursor = connection.cursor()
-        self.cursor.fast_executemany = True
+        self.dialect = dialect
+        if hasattr(self.cursor, "fast_executemany"):
+            self.cursor.fast_executemany = True
         self.customer_ids: dict[int, int] = {}
         self.subscription_ids: dict[int, int] = {}
         self.invoice_ids: dict[int, int] = {}
@@ -61,8 +63,11 @@ class SyntheticLoader:
     def _insert_many(self, table: str, columns: list[str], rows: list[tuple]) -> None:
         if not rows:
             return
-        placeholders = ", ".join("?" for _ in columns)
-        column_list = ", ".join(f"[{c}]" for c in columns)
+        marker = "%s" if self.dialect == "postgres" else "?"
+        placeholders = ", ".join(marker for _ in columns)
+        column_list = ", ".join(
+            columns if self.dialect == "postgres" else [f"[{c}]" for c in columns]
+        )
         sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
         self.cursor.executemany(sql, rows)
 

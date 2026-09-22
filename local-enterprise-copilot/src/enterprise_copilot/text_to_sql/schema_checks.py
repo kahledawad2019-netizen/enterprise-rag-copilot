@@ -40,8 +40,6 @@ from .schema_retriever import SQLContext, TableInfo
 
 log = logging.getLogger(__name__)
 
-DIALECT = "tsql"
-
 # T-SQL types that arithmetic aggregates accept.
 NUMERIC_TYPES = frozenset(
     {
@@ -93,7 +91,11 @@ def _types_for(tables: list[TableInfo]) -> dict[str, str]:
 
 
 def check_aggregate_types(
-    sql: str, context: SQLContext, catalog: list[TableInfo] | None = None
+    sql: str,
+    context: SQLContext,
+    catalog: list[TableInfo] | None = None,
+    *,
+    dialect: str = "tsql",
 ) -> list[str]:
     """Report SUM/AVG applied to a non-numeric column.
 
@@ -104,7 +106,7 @@ def check_aggregate_types(
     if not sql.strip():
         return []
     try:
-        statement = sqlglot.parse_one(sql, read=DIALECT)
+        statement = sqlglot.parse_one(sql, read=dialect)
     except Exception:
         return []  # the guard reports parse failures; not this module's job
     if not isinstance(statement, exp.Expression):
@@ -156,7 +158,11 @@ def check_aggregate_types(
 
 
 def check_columns_exist(
-    sql: str, context: SQLContext, catalog: list[TableInfo] | None = None
+    sql: str,
+    context: SQLContext,
+    catalog: list[TableInfo] | None = None,
+    *,
+    dialect: str = "tsql",
 ) -> list[str]:
     """Report columns that exist in no offered table.
 
@@ -170,7 +176,7 @@ def check_columns_exist(
     if not sql.strip():
         return []
     try:
-        statement = sqlglot.parse_one(sql, read=DIALECT)
+        statement = sqlglot.parse_one(sql, read=dialect)
     except Exception:
         return []
     if not isinstance(statement, exp.Expression):
@@ -209,10 +215,16 @@ def check_columns_exist(
 
 
 def validate_against_schema(
-    sql: str, context: SQLContext, catalog: list[TableInfo] | None = None
+    sql: str,
+    context: SQLContext,
+    catalog: list[TableInfo] | None = None,
+    *,
+    dialect: str = "tsql",
 ) -> list[str]:
     """All schema-aware checks. An empty list means the SQL should execute."""
-    return check_aggregate_types(sql, context, catalog) + check_columns_exist(sql, context, catalog)
+    return check_aggregate_types(
+        sql, context, catalog, dialect=dialect
+    ) + check_columns_exist(sql, context, catalog, dialect=dialect)
 
 
 __all__ = [

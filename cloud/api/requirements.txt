@@ -16,12 +16,9 @@
 #                                    container. The reranker degrades to a
 #                                    no-op; hybrid ranking is used directly.
 #
-# The database stays SQL Server, deployed as Azure SQL on its free offer
-# (100,000 vCore-seconds and 32 GB per month, for the lifetime of the
-# subscription). That keeps 2,198 lines of T-SQL, the sqlglot guard's `tsql`
-# dialect, the tenant-isolation rules and the published evaluation numbers
-# exactly as they are and as they were verified. Translating them to Postgres
-# would have put all of that back in question for no functional gain.
+# The free cloud target is Neon PostgreSQL. The same application also keeps a
+# SQL Server adapter for local SSMS development, but the production container
+# only ships the PostgreSQL driver and uses DATABASE_BACKEND=postgresql.
 
 # --- web layer ---
 fastapi>=0.115,<1
@@ -34,9 +31,8 @@ python-dotenv>=1.0
 requests>=2.32,<3
 
 # --- database ---
-# SQL Server via ODBC. pyodbc is a thin wrapper over the driver, so the image
-# must also install msodbcsql18 - see the Dockerfile.
-pyodbc>=5.2
+# PostgreSQL / Neon. The binary extra supplies libpq without OS packages.
+psycopg[binary]>=3.2,<4
 SQLAlchemy>=2.0.36,<3
 sqlglot>=25.0,<31
 

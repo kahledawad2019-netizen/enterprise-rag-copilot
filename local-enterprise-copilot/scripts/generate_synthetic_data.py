@@ -132,9 +132,9 @@ def main() -> int:
             print("\n--dry-run: nothing written to the database.")
             return 0
 
-        print("\nLoading into SQL Server ...")
+        print(f"\nLoading into {settings.database_backend} ...")
         load_started = time.perf_counter()
-        loader = SyntheticLoader(conn)
+        loader = SyntheticLoader(conn, dialect=settings.sql_dialect)
         if not args.keep:
             loader.clear_transactional_data()
         loader.load(generator.data)

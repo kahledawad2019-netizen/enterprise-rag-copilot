@@ -15,14 +15,13 @@ from typing import TYPE_CHECKING, Any
 from ..config import Settings, get_settings
 
 if TYPE_CHECKING:  # pragma: no cover
-    import pyodbc
     from sqlalchemy.engine import Engine
 
 log = logging.getLogger(__name__)
 
 
 class DatabaseUnavailableError(RuntimeError):
-    """Raised when SQL Server cannot be reached, with a recovery hint."""
+    """Raised when the configured database cannot be reached."""
 
 
 @contextmanager
@@ -31,30 +30,45 @@ def raw_connection(
     *,
     database: str | None = None,
     autocommit: bool = False,
-) -> Iterator[pyodbc.Connection]:
-    """Yield a pyodbc connection.
+) -> Iterator[Any]:
+    """Yield a DB-API connection for the selected backend.
 
     `autocommit=True` is required for DDL such as CREATE DATABASE, which cannot
     run inside an explicit transaction.
     """
-    import pyodbc
-
     settings = settings or get_settings()
-    try:
-        conn = pyodbc.connect(
-            settings.database.odbc_connection_string(database=database),
-            timeout=settings.database.connect_timeout,
-            autocommit=autocommit,
-        )
-    except pyodbc.Error as exc:
-        # Deliberately reports the server and database but never the full
-        # connection string, which may carry a password.
-        raise DatabaseUnavailableError(
-            f"Cannot connect to SQL Server at {settings.database.server!r} "
-            f"(database {database or settings.database.database!r}). "
-            f"Driver reported: {str(exc)[:200]}. "
-            "Check that the SQL Server service is running and MSSQL_SERVER is correct."
-        ) from exc
+    if settings.database_backend == "postgresql":
+        try:
+            import psycopg
+
+            conn = psycopg.connect(
+                settings.postgres.connection_dsn(),
+                connect_timeout=settings.postgres.connect_timeout,
+                autocommit=autocommit,
+            )
+        except Exception as exc:
+            raise DatabaseUnavailableError(
+                "Cannot connect to PostgreSQL using POSTGRES_DSN. "
+                f"Driver reported: {str(exc)[:200]}."
+            ) from exc
+    else:
+        try:
+            import pyodbc
+
+            conn = pyodbc.connect(
+                settings.database.odbc_connection_string(database=database),
+                timeout=settings.database.connect_timeout,
+                autocommit=autocommit,
+            )
+        except Exception as exc:
+            # Deliberately reports the server and database but never the full
+            # connection string, which may carry a password.
+            raise DatabaseUnavailableError(
+                f"Cannot connect to SQL Server at {settings.database.server!r} "
+                f"(database {database or settings.database.database!r}). "
+                f"Driver reported: {str(exc)[:200]}. "
+                "Check that the SQL Server service is running and MSSQL_SERVER is correct."
+            ) from exc
 
     try:
         yield conn
@@ -67,6 +81,12 @@ def create_engine(settings: Settings | None = None, **kwargs: Any) -> Engine:
     from sqlalchemy import create_engine as _create_engine
 
     settings = settings or get_settings()
+    if settings.database_backend == "postgresql":
+        return _create_engine(
+            settings.postgres.sqlalchemy_url(),
+            pool_pre_ping=True,
+            **kwargs,
+        )
     return _create_engine(
         settings.database.sqlalchemy_url(),
         fast_executemany=True,  # bulk inserts for the synthetic data loader
@@ -84,6 +104,21 @@ def server_info(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
     with raw_connection(settings) as conn:
         cur = conn.cursor()
+        if settings.database_backend == "postgresql":
+            cur.execute(
+                "SELECT version(), current_user, current_database(), "
+                "       rolsuper, rolbypassrls "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+            version, login, database, superuser, bypass_rls = cur.fetchone()
+            return {
+                "edition": "PostgreSQL",
+                "version": version,
+                "windows_auth_only": False,
+                "login": login,
+                "database": database,
+                "is_sysadmin": bool(superuser or bypass_rls),
+            }
         cur.execute(
             "SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(100)),"
             "       CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(50)),"
