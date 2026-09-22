@@ -230,6 +230,91 @@ def convert_conditional_insert(sql: str) -> str:
     return pattern.sub(fix, sql)
 
 
+def convert_index_syntax(sql: str) -> str:
+    """Index storage hints that PostgreSQL does not have.
+
+    CLUSTERED/NONCLUSTERED describe SQL Server's physical row storage: the
+    clustered index IS the table. PostgreSQL heap tables have no such notion,
+    so the keyword is simply dropped rather than emulated - CLUSTER exists but
+    is a one-off reorganisation, not a permanent property, and pretending
+    otherwise would be a lie in the schema.
+
+    INCLUDE is kept: PostgreSQL 11+ supports covering indexes with the same
+    spelling and the same meaning.
+    """
+    sql = re.sub(r"\bCREATE\s+NONCLUSTERED\s+INDEX\b", "CREATE INDEX", sql, flags=re.I)
+    sql = re.sub(r"\bCREATE\s+CLUSTERED\s+INDEX\b", "CREATE INDEX", sql, flags=re.I)
+    sql = re.sub(
+        r"\bCREATE\s+UNIQUE\s+NONCLUSTERED\s+INDEX\b", "CREATE UNIQUE INDEX", sql, flags=re.I
+    )
+    sql = re.sub(r"(?im)^\s*SET\s+NOCOUNT\s+(ON|OFF)\s*;?\s*$", "", sql)
+    return sql
+
+
+def convert_date_functions(sql: str) -> str:
+    """DATEADD and DATEDIFF, which have no direct PostgreSQL spelling.
+
+        DATEADD(DAY, -30, x)      -> (x + INTERVAL '-30 day')
+        DATEDIFF(MINUTE, a, b)    -> (EXTRACT(EPOCH FROM (b - a)) / 60)
+
+    DATEDIFF is the one to be careful about. SQL Server counts *boundaries
+    crossed*, not elapsed time: DATEDIFF(DAY, '2026-01-01 23:59', '2026-01-02
+    00:01') is 1, though two minutes passed. The PostgreSQL form below measures
+    elapsed time and truncates, so it returns 0 for that pair.
+
+    For this schema the difference does not bite - every DATEDIFF here measures
+    a duration between two timestamps (response time, resolution time), which
+    is exactly what elapsed-time semantics mean. It would bite on a query that
+    counts calendar days or month boundaries, so the divergence is recorded
+    here rather than discovered later.
+    """
+    unit_seconds = {
+        "second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800,
+    }
+
+    def fix_datediff(match: re.Match[str]) -> str:
+        unit, start, end = match.group(1).lower(), match.group(2), match.group(3)
+        divisor = unit_seconds.get(unit)
+        if divisor is None:
+            # MONTH/YEAR are calendar arithmetic, not elapsed seconds. Leave
+            # them untranslated so the script fails loudly rather than
+            # returning a plausible wrong number.
+            return match.group(0)
+        inner = f"EXTRACT(EPOCH FROM (({end}) - ({start})))"
+        return f"({inner} / {divisor})::int" if divisor != 1 else f"{inner}::int"
+
+    sql = re.sub(
+        r"\bDATEDIFF\s*\(\s*(\w+)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+        fix_datediff,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    def fix_dateadd(match: re.Match[str]) -> str:
+        unit, amount, target = match.group(1).lower(), match.group(2).strip(), match.group(3)
+        return f"(({target}) + INTERVAL '{amount} {unit}')"
+
+    sql = re.sub(
+        r"\bDATEADD\s*\(\s*(\w+)\s*,\s*(-?\s*\d+)\s*,\s*([^)]+?)\s*\)",
+        fix_dateadd,
+        sql,
+        flags=re.IGNORECASE,
+    )
+    return sql
+
+
+def convert_apply(sql: str) -> str:
+    """APPLY -> LATERAL.
+
+    CROSS APPLY is CROSS JOIN LATERAL. OUTER APPLY is LEFT JOIN LATERAL with
+    `ON TRUE`, because a LEFT JOIN needs a condition and the lateral
+    subquery's own WHERE already did the filtering.
+    """
+    sql = re.sub(r"\bCROSS\s+APPLY\b", "CROSS JOIN LATERAL", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bOUTER\s+APPLY\b", "LEFT JOIN LATERAL", sql, flags=re.IGNORECASE)
+    return sql
+
+
 def convert_print(sql: str) -> str:
     """PRINT 'x' -> a DO block raising a notice, which psql shows the same way."""
     def fix(match: re.Match[str]) -> str:
@@ -254,6 +339,9 @@ def translate(sql: str) -> str:
         convert_boolean_defaults,
         drop_default_constraint_names,
         convert_builtins,
+        convert_index_syntax,
+        convert_date_functions,
+        convert_apply,
         convert_conditional_insert,
         convert_print,
         unbracket,

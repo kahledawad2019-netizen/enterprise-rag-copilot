@@ -85,16 +85,96 @@ jobs:
       - name: 003 tables
         run: $PSQL -f local-enterprise-copilot/sql/postgres/003_create_tables.sql
 
+      - name: 004 indexes
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/004_create_indexes.sql
+
+      - name: 005 views
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/005_create_views.sql
+
+      - name: 007 reference data
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/007_seed_reference_data.sql
+
       # Re-running must be safe. The SQL Server scripts are idempotent by
       # design and the translation has to keep that, or a redeploy becomes a
       # one-shot operation nobody dares repeat. This is also the step that
       # catches a dropped IF OBJECT_ID guard: sqlglot silently discards those,
       # which would pass a first run and fail every one after it.
-      - name: Re-apply 001-003 (idempotency)
+      - name: Re-apply everything (idempotency)
         run: |
-          $PSQL -f local-enterprise-copilot/sql/postgres/001_create_database.sql
-          $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
-          $PSQL -f local-enterprise-copilot/sql/postgres/003_create_tables.sql
+          for f in local-enterprise-copilot/sql/postgres/00[1234578]_*.sql; do
+            echo "re-applying $f"
+            $PSQL -f "$f"
+          done
+
+      # The glossary and the approved SQL examples are not schema - they are
+      # the text the model is prompted with. If they still contain T-SQL while
+      # the database is PostgreSQL, the model is being taught to write queries
+      # that cannot run, and every Text-to-SQL failure after that traces back
+      # to seed data nobody thought to translate.
+      #
+      # This is the one part of the migration a mechanical translator cannot
+      # settle, because the SQL lives inside string literals and rewriting it
+      # blindly is how a working example turns into a plausible wrong one.
+      - name: Assert seeded SQL examples contain no T-SQL-only syntax
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              offenders text;
+          BEGIN
+              SELECT string_agg(format('%s: %s', src, snippet), E'\n')
+              INTO offenders
+              FROM (
+                  SELECT 'approved_sql_examples' AS src,
+                         left(sql_text, 90) AS snippet
+                  FROM ai.approved_sql_examples
+                  WHERE sql_text ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\[)'
+                  UNION ALL
+                  SELECT 'business_glossary',
+                         left(sql_guidance, 90)
+                  FROM ai.business_glossary
+                  WHERE sql_guidance ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\[)'
+              ) AS bad;
+
+              IF offenders IS NOT NULL THEN
+                  RAISE EXCEPTION
+                      E'Seed data still teaches the model T-SQL:\n%', offenders;
+              END IF;
+
+              RAISE NOTICE 'Seeded SQL examples and glossary guidance are PostgreSQL-clean.';
+          END
+          $$;
+          SQL
+
+      - name: Assert the analytics views are queryable
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              v record;
+              n int;
+              checked int := 0;
+          BEGIN
+              FOR v IN
+                  SELECT table_schema, table_name
+                  FROM information_schema.views
+                  WHERE table_schema = 'analytics'
+              LOOP
+                  -- A view that parses but cannot execute is a translation
+                  -- that looks finished and is not.
+                  EXECUTE format('SELECT count(*) FROM %I.%I', v.table_schema, v.table_name)
+                  INTO n;
+                  checked := checked + 1;
+              END LOOP;
+
+              IF checked = 0 THEN
+                  RAISE EXCEPTION 'No analytics views exist; 005 did not create them.';
+              END IF;
+
+              RAISE NOTICE '% analytics views created and queryable.', checked;
+          END
+          $$;
+          SQL
 
       - name: Assert all 25 tables exist
         run: |
