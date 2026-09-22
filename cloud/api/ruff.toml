@@ -1,0 +1,34 @@
+# Lint settings for the FastAPI adapter.
+#
+# The copilot package is linted by local-enterprise-copilot/pyproject.toml;
+# this directory sits outside that project and was not covered by any static
+# analysis at all. The rule set below is the same one, so the two trees are
+# held to one standard.
+#
+# Ruff resolves the nearest configuration, so this file governs cloud/api/
+# only and does not affect the copilot package.
+
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[lint.flake8-bugbear]
+# B008 forbids function calls in argument defaults, which is correct for
+# mutable defaults and wrong for FastAPI: `Depends(...)` in a default IS the
+# documented dependency-injection idiom, and rewriting it would break the
+# framework rather than fix a bug. Whitelisting the injection callables keeps
+# B008 active for genuine cases.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Security",
+]

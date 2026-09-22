@@ -488,9 +488,16 @@ def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
     except Exception as exc:  # a missing index must not break the whole UI
         log.warning("Could not read corpus counts: %s", exc)
 
-    visible_personas = PERSONAS if caller.demo_mode else {
-        caller.persona_key: PERSONAS[caller.persona_key]  # type: ignore[index]
-    }
+    # Outside demo mode a caller owns exactly one persona. Routing through
+    # _resolve_persona rather than indexing PERSONAS directly keeps that rule
+    # in one place and lets the types carry it: persona_key is Optional only
+    # because demo mode leaves it unset, and require_caller has already
+    # returned 403 for an unmapped identity by the time this runs.
+    if caller.demo_mode:
+        visible_personas = PERSONAS
+    else:
+        key, persona = _resolve_persona(caller, None)
+        visible_personas = {key: persona}
     return MetaResponse(
         app_name=settings.app_name,
         personas=[
