@@ -82,13 +82,116 @@ jobs:
       - name: 002 schemas
         run: $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
 
+      - name: 003 tables
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/003_create_tables.sql
+
       # Re-running must be safe. The SQL Server scripts are idempotent by
       # design and the translation has to keep that, or a redeploy becomes a
-      # one-shot operation nobody dares repeat.
-      - name: Re-apply 001-002 (idempotency)
+      # one-shot operation nobody dares repeat. This is also the step that
+      # catches a dropped IF OBJECT_ID guard: sqlglot silently discards those,
+      # which would pass a first run and fail every one after it.
+      - name: Re-apply 001-003 (idempotency)
         run: |
           $PSQL -f local-enterprise-copilot/sql/postgres/001_create_database.sql
           $PSQL -f local-enterprise-copilot/sql/postgres/002_create_schemas.sql
+          $PSQL -f local-enterprise-copilot/sql/postgres/003_create_tables.sql
+
+      - name: Assert all 25 tables exist
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              expected text[] := ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.products','core.plans','core.subscriptions',
+                  'core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.invoice_items','billing.payments',
+                  'billing.refunds',
+                  'support.sla_policies','support.tickets','support.ticket_events',
+                  'support.sla_breaches','support.incidents','support.incident_impact',
+                  'analytics.customer_health',
+                  'ai.business_glossary','ai.approved_sql_examples','ai.audit_events',
+                  'ai.schema_version',
+                  'security.access_groups','security.app_users'
+              ];
+              missing text;
+              found int;
+          BEGIN
+              SELECT string_agg(t, ', ')
+              INTO missing
+              FROM unnest(expected) AS t
+              WHERE to_regclass(t) IS NULL;
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'Missing tables: %', missing;
+              END IF;
+
+              SELECT count(*) INTO found
+              FROM information_schema.tables
+              WHERE table_schema IN ('core','billing','support','analytics','ai','security')
+                AND table_type = 'BASE TABLE';
+
+              RAISE NOTICE 'All 25 expected tables present (% base tables total).', found;
+          END
+          $$;
+          SQL
+
+      # The tenant column is what every isolation rule keys on. If the
+      # translation dropped it from a table, RLS in 009 would silently protect
+      # nothing there.
+      - name: Assert tenant_id survived on tenant-scoped tables
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              missing text;
+          BEGIN
+              SELECT string_agg(t, ', ')
+              INTO missing
+              FROM unnest(ARRAY[
+                  'core.customers','core.subscriptions','core.usage_daily',
+                  'billing.invoices','billing.payments','support.tickets'
+              ]) AS t
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = split_part(t, '.', 1)
+                    AND table_name   = split_part(t, '.', 2)
+                    AND column_name  = 'tenant_id'
+              );
+
+              IF missing IS NOT NULL THEN
+                  RAISE EXCEPTION 'tenant_id missing on: %', missing;
+              END IF;
+
+              RAISE NOTICE 'tenant_id present on every tenant-scoped table checked.';
+          END
+          $$;
+          SQL
+
+      # A CHECK constraint that vanished in translation is a data-integrity
+      # rule that stopped existing without anyone noticing.
+      - name: Assert CHECK constraints survived
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              n int;
+          BEGIN
+              SELECT count(*) INTO n
+              FROM information_schema.table_constraints
+              WHERE constraint_type = 'CHECK'
+                AND constraint_schema IN ('core','billing','support','analytics','ai','security')
+                AND constraint_name LIKE 'CK\_%';
+
+              IF n < 20 THEN
+                  RAISE EXCEPTION
+                      'Only % named CHECK constraints found; the T-SQL schema defines 27.', n;
+              END IF;
+
+              RAISE NOTICE '% named CHECK constraints present.', n;
+          END
+          $$;
+          SQL
 
       - name: Assert the six schemas exist
         run: |
