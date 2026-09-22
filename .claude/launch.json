@@ -22,7 +22,7 @@
       "cwd": "cloud/ui",
       "env": {
         "COPILOT_API": "http://127.0.0.1:8000",
-        "BACKEND_TOKEN": "test-token-local"
+        "COPILOT_API_NOTE": "export BACKEND_TOKEN in your shell before starting; it is never stored here"
       }
     }
   ]
