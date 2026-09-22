@@ -128,12 +128,12 @@ jobs:
                   SELECT 'approved_sql_examples' AS src,
                          left(sql_text, 90) AS snippet
                   FROM ai.approved_sql_examples
-                  WHERE sql_text ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\[)'
+                  WHERE sql_text ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\mOUTER\s+APPLY\M|\mCROSS\s+APPLY\M|\mNVARCHAR\M|\mDATETIME2\M|@[A-Za-z_]|\[)'
                   UNION ALL
                   SELECT 'business_glossary',
                          left(sql_guidance, 90)
                   FROM ai.business_glossary
-                  WHERE sql_guidance ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\[)'
+                  WHERE sql_guidance ~* '(\mTOP\s*\(|\mDATEDIFF\s*\(|\mDATEADD\s*\(|\mGETDATE\s*\(|\mISNULL\s*\(|\mSYSUTCDATETIME\s*\(|\mOUTER\s+APPLY\M|\mCROSS\s+APPLY\M|\mNVARCHAR\M|\mDATETIME2\M|@[A-Za-z_]|\[)'
               ) AS bad;
 
               IF offenders IS NOT NULL THEN

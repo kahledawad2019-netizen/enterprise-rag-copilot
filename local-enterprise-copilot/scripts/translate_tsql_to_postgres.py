@@ -43,6 +43,9 @@ HAND_TRANSLATED = {
     "001_create_database.sql",   # CREATE DATABASE / recovery model / RCSI
     "002_create_schemas.sql",    # trivial, plus the PUBLIC revoke
     "006_create_security.sql",   # DENY has no equivalent
+    # Contains SQL-as-data for Text-to-SQL training. Its quoting, parameters,
+    # and business meaning need human review rather than blind rewriting.
+    "007_seed_reference_data.sql",
     "009_enable_row_level_security.sql",  # SECURITY POLICY vs CREATE POLICY
 }
 
