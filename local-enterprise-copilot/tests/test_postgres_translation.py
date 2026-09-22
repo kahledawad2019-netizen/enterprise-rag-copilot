@@ -87,3 +87,15 @@ FROM (VALUES ('2025-01-01', 1)) AS v(effective_date, is_current);
 def test_convert_boolean_casts_maps_sql_server_bit_literals() -> None:
     assert TRANSLATOR.convert_boolean_casts("CAST(1 AS BOOLEAN)") == "TRUE"
     assert TRANSLATOR.convert_boolean_casts("cast(0 as boolean)") == "FALSE"
+
+
+def test_make_views_security_invoker_prevents_rls_bypass() -> None:
+    source = "CREATE OR REPLACE VIEW analytics.vw_customer AS\nSELECT * FROM core.customers;"
+
+    result = TRANSLATOR.make_views_security_invoker(source)
+
+    assert result == (
+        "CREATE OR REPLACE VIEW analytics.vw_customer\n"
+        "WITH (security_invoker = true)\n"
+        "AS\nSELECT * FROM core.customers;"
+    )

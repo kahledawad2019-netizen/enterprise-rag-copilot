@@ -377,6 +377,22 @@ def convert_create_or_alter(sql: str) -> str:
     )
 
 
+def make_views_security_invoker(sql: str) -> str:
+    """Make PostgreSQL views enforce the querying role's RLS policies.
+
+    PostgreSQL views are security-definer by default: underlying tables are
+    checked as the view owner, who is normally the migration owner and can
+    bypass row-level security. PostgreSQL 15+ supports security_invoker views,
+    which apply permissions and RLS as the application role instead.
+    """
+    return re.sub(
+        r"\bCREATE\s+OR\s+REPLACE\s+VIEW\s+([A-Za-z_]\w*\.[A-Za-z_]\w*)\s+AS\b",
+        r"CREATE OR REPLACE VIEW \1\nWITH (security_invoker = true)\nAS",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def convert_top(sql: str) -> str:
     """SELECT TOP (n) ... -> SELECT ... LIMIT n.
 
@@ -795,6 +811,7 @@ def translate(
         drop_default_constraint_names,
         convert_builtins,
         convert_create_or_alter,
+        make_views_security_invoker,
         convert_date_parts,
         convert_recursive_cte,
         convert_top,

@@ -91,8 +91,14 @@ jobs:
       - name: 005 views
         run: $PSQL -f local-enterprise-copilot/sql/postgres/005_create_views.sql
 
+      - name: 006 least-privilege role
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/006_create_security.sql
+
       - name: 007 reference data
         run: $PSQL -f local-enterprise-copilot/sql/postgres/007_seed_reference_data.sql
+
+      - name: 009 row-level security
+        run: $PSQL -f local-enterprise-copilot/sql/postgres/009_enable_row_level_security.sql
 
       # Re-running must be safe. The SQL Server scripts are idempotent by
       # design and the translation has to keep that, or a redeploy becomes a
@@ -101,7 +107,7 @@ jobs:
       # which would pass a first run and fail every one after it.
       - name: Re-apply everything (idempotency)
         run: |
-          for f in local-enterprise-copilot/sql/postgres/00[1234578]_*.sql; do
+          for f in local-enterprise-copilot/sql/postgres/00[1-9]_*.sql; do
             echo "re-applying $f"
             $PSQL -f "$f"
           done
@@ -355,6 +361,152 @@ jobs:
               RAISE NOTICE 'schema public is locked down.';
           END
           $$;
+          SQL
+
+      - name: Assert readonly role attributes and RLS coverage
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          DECLARE
+              unsafe_role int;
+              unprotected int;
+              missing_policies int;
+              unsafe_views int;
+          BEGIN
+              SELECT count(*) INTO unsafe_role
+              FROM pg_roles
+              WHERE rolname = 'copilot_readonly'
+                AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication
+                     OR rolbypassrls OR rolcanlogin);
+
+              IF unsafe_role <> 0 THEN
+                  RAISE EXCEPTION 'copilot_readonly has a privileged/login attribute';
+              END IF;
+
+              SELECT count(*) INTO unprotected
+              FROM unnest(ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.subscriptions','core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.payments','billing.refunds',
+                  'support.tickets','support.ticket_events','support.sla_breaches',
+                  'support.incident_impact','analytics.customer_health','security.app_users'
+              ]) AS target(name)
+              JOIN pg_class c ON c.oid = to_regclass(target.name)
+              WHERE NOT c.relrowsecurity OR NOT c.relforcerowsecurity;
+
+              IF unprotected <> 0 THEN
+                  RAISE EXCEPTION '% tenant tables are missing ENABLE/FORCE RLS', unprotected;
+              END IF;
+
+              SELECT count(*) INTO missing_policies
+              FROM unnest(ARRAY[
+                  'core.tenants','core.customers','core.customer_contacts',
+                  'core.subscriptions','core.subscription_changes','core.usage_daily',
+                  'billing.invoices','billing.payments','billing.refunds',
+                  'support.tickets','support.ticket_events','support.sla_breaches',
+                  'support.incident_impact','analytics.customer_health','security.app_users'
+              ]) AS target(name)
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM pg_policy
+                  WHERE polrelid = to_regclass(target.name)
+                    AND polname = 'tenant_isolation'
+              );
+
+              IF missing_policies <> 0 THEN
+                  RAISE EXCEPTION '% tenant tables are missing tenant_isolation', missing_policies;
+              END IF;
+
+              SELECT count(*) INTO unsafe_views
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'analytics'
+                AND c.relkind = 'v'
+                AND NOT COALESCE(c.reloptions @> ARRAY['security_invoker=true'], FALSE);
+
+              IF unsafe_views <> 0 THEN
+                  RAISE EXCEPTION '% analytics views can bypass caller RLS', unsafe_views;
+              END IF;
+
+              RAISE NOTICE 'readonly attributes, 15 RLS policies, and security-invoker views verified.';
+          END
+          $$;
+          SQL
+
+      - name: Assert tenant isolation as readonly role
+        run: |
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          SELECT set_config(
+              'app.tenant_id',
+              (SELECT tenant_id::text FROM core.tenants WHERE tenant_code = 'NWC-EU'),
+              true
+          );
+          SET LOCAL ROLE copilot_readonly;
+          DO $$
+          DECLARE
+              visible int;
+              wrong_tenant int;
+          BEGIN
+              SELECT count(*) INTO visible FROM core.tenants;
+              SELECT count(*) INTO wrong_tenant
+              FROM core.tenants WHERE tenant_code <> 'NWC-EU';
+
+              IF visible <> 1 OR wrong_tenant <> 0 THEN
+                  RAISE EXCEPTION
+                      'RLS leak: visible tenants %, cross-tenant rows %', visible, wrong_tenant;
+              END IF;
+          END
+          $$;
+          ROLLBACK;
+
+          BEGIN;
+          SET LOCAL ROLE copilot_readonly;
+          DO $$
+          DECLARE visible int;
+          BEGIN
+              SELECT count(*) INTO visible FROM core.tenants;
+              IF visible <> 0 THEN
+                  RAISE EXCEPTION 'Missing tenant context exposed % rows', visible;
+              END IF;
+          END
+          $$;
+          ROLLBACK;
+          SQL
+
+      - name: Assert readonly role cannot write or read security data
+        run: |
+          if $PSQL -c "SET ROLE copilot_readonly; DELETE FROM core.customers"; then
+            echo "copilot_readonly unexpectedly deleted business data"
+            exit 1
+          fi
+
+          if $PSQL -c "SET ROLE copilot_readonly; SELECT * FROM security.app_users"; then
+            echo "copilot_readonly unexpectedly read the user registry"
+            exit 1
+          fi
+
+          if $PSQL -c "SET ROLE copilot_readonly; SELECT * FROM ai.audit_events"; then
+            echo "copilot_readonly unexpectedly read its audit trail"
+            exit 1
+          fi
+
+          $PSQL -v ON_ERROR_STOP=1 <<'SQL'
+          BEGIN;
+          SET LOCAL ROLE copilot_readonly;
+          INSERT INTO ai.audit_events (trace_id, route, sql_allowed)
+          VALUES ('postgres-ci-permission-check', 'refuse', FALSE);
+          RESET ROLE;
+          DO $$
+          BEGIN
+              IF NOT EXISTS (
+                  SELECT 1 FROM ai.audit_events
+                  WHERE trace_id = 'postgres-ci-permission-check'
+              ) THEN
+                  RAISE EXCEPTION 'append-only audit INSERT did not persist';
+              END IF;
+          END
+          $$;
+          ROLLBACK;
           SQL
 
       - name: Migration coverage summary

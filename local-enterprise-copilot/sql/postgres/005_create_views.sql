@@ -37,6 +37,7 @@
    spike looks like missing data.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_month_spine
+WITH (security_invoker = true)
 AS
 WITH RECURSIVE bounds AS (
     SELECT
@@ -77,6 +78,7 @@ FROM months;
      - annual plans are already normalised to a monthly amount in mrr_amount
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_monthly_recurring_revenue
+WITH (security_invoker = true)
 AS
 SELECT
     m.month_start,
@@ -108,6 +110,7 @@ GROUP BY
    customers and losing one large one are not the same event.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_churn_metrics
+WITH (security_invoker = true)
 AS
 SELECT
     m.month_start,
@@ -172,6 +175,7 @@ CROSS JOIN core.tenants AS t;
    wrong, and is a mistake a schema-only prompt makes routinely.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_sla_performance
+WITH (security_invoker = true)
 AS
 SELECT
     tk.ticket_id,
@@ -236,6 +240,7 @@ LEFT JOIN LATERAL (
    stop the model from writing a six-table join it will get subtly wrong.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_customer_360
+WITH (security_invoker = true)
 AS
 SELECT
     c.customer_id,
@@ -323,6 +328,7 @@ LEFT JOIN LATERAL (
    than whatever the model would improvise.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_customer_risk
+WITH (security_invoker = true)
 AS
 SELECT
     v.customer_id,
@@ -366,6 +372,7 @@ WHERE v.customer_status <> 'churned';
    corpus alongside the database facts.
    --------------------------------------------------------------------------- */
 CREATE OR REPLACE VIEW analytics.vw_incident_impact
+WITH (security_invoker = true)
 AS
 SELECT
     i.incident_id,
