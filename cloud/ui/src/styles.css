@@ -1423,3 +1423,13 @@ kbd {
     max-width: 90%;
   }
 }
+/* Authentication is intentionally a separate shell: no application data or
+   navigation is mounted until Clerk has an authenticated session. */
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: var(--canvas, #f4f6f8);
+  color: var(--ink, #172033);
+}

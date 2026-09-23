@@ -18,7 +18,12 @@ import react from "@vitejs/plugin-react";
  */
 const BACKEND = process.env.COPILOT_API ?? "http://127.0.0.1:8787";
 const TOKEN = process.env.BACKEND_TOKEN;
-const TALKING_TO_WORKER = BACKEND.includes("8787");
+// A non-default local port is useful when another project process already
+// owns :8787. Make the proxy mode explicit instead of guessing solely from a
+// port number and accidentally stripping `/api` from Worker requests.
+const TALKING_TO_WORKER =
+  process.env.COPILOT_API_KIND === "worker" ||
+  (process.env.COPILOT_API_KIND !== "backend" && BACKEND.includes("8787"));
 
 export default defineConfig({
   plugins: [react()],

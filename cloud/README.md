@@ -298,28 +298,32 @@ copilot.example.com/api/*  →  copilot-api
 Same origin means no CORS preflight on every question, and no build-time API
 URL to get wrong between environments.
 
-## 7. Lock it down with Cloudflare Access
+## 7. Lock it down with Clerk
 
 Production and staging fail closed until this step is configured: the Worker
 returns 503 rather than proxying an unauthenticated request. Only local
 development may set `AUTH_MODE=disabled` together with
 `ENVIRONMENT=development`.
 
-1. Zero Trust → Access → Applications → Add a self-hosted application.
-2. Domain: `copilot.example.com`.
-3. Add a policy — e.g. allow emails ending `@yourcompany.com`.
-4. Copy the **Application Audience (AUD) tag**.
-5. Set both variables in `wrangler.toml` and redeploy the Worker:
+1. Create separate Clerk development/staging and production instances.
+2. Enable the required sign-in methods and require verified email addresses.
+3. Add signed `aud` and `email` claims to the Clerk session token.
+4. Configure the exact issuer, JWKS URL, audience and allowed UI origins in
+   `wrangler.toml`, then redeploy the Worker:
 
 ```toml
-ACCESS_AUD = "your-aud-tag"
-ACCESS_TEAM_DOMAIN = "yourteam.cloudflareaccess.com"
+AUTH_PROVIDER = "clerk"
+CLERK_AUDIENCE = "enterprise-rag-copilot-api"
+CLERK_ISSUER = "https://your-instance.clerk.accounts.dev"
+CLERK_JWKS_URL = "https://your-instance.clerk.accounts.dev/.well-known/jwks.json"
+CLERK_AUTHORIZED_PARTIES = "https://copilot.example.com"
 ```
 
-The Worker verifies the JWT signature against your team's JWKS. It does not
-trust the `CF-Access-Authenticated-User-Email` header on its own: a request
-that reaches the Worker without passing through Access can set any header it
-likes.
+The React app sends Clerk's short-lived session JWT in the Authorization
+header. The Worker verifies the RS256 signature, expiry, not-before time,
+issuer, audience, authorized frontend (`azp`), active-session state and signed
+email. It rejects impersonated sessions and never trusts a browser-provided
+identity header. `CLERK_SECRET_KEY` is not needed by this gateway.
 
 The backend then maps the verified email to exactly one persona using
 `COPILOT_IDENTITY_MAP_JSON`. The browser's `persona` field is ignored outside
@@ -342,8 +346,10 @@ Nothing in this table belongs in a file that git can see.
 | `COPILOT_IDENTITY_MAP_JSON` | Container | `fly secrets set` | Email-to-persona authorization map. Treat the real employee list as sensitive. |
 | `QDRANT_API_KEY` | Container / index job | `fly secrets set` | Shared vector database credential. |
 | `VANNA_API_KEY` | Experimental container only | `fly secrets set` | Not used by the production profile; see `docs/vanna_cloud.md`. |
-| `ACCESS_AUD` | Worker (`vars`) | `wrangler.toml` | Not secret — an identifier. |
-| `ACCESS_TEAM_DOMAIN` | Worker (`vars`) | `wrangler.toml` | Not secret. |
+| `CLERK_AUDIENCE` | Worker (`vars`) | `wrangler.toml` | Signed JWT audience; not secret. |
+| `CLERK_ISSUER`, `CLERK_JWKS_URL` | Worker (`vars`) | `wrangler.toml` | Clerk instance identifiers; not secret. |
+| `CLERK_AUTHORIZED_PARTIES` | Worker (`vars`) | `wrangler.toml` | Exact allowed UI origins checked against `azp`; not secret. |
+| `VITE_CLERK_PUBLISHABLE_KEY` | UI build environment | Pages dashboard | Public frontend key; never put the Clerk secret key in `VITE_*`. |
 
 Generate the backend token with `openssl rand -base64 32`, not by typing one.
 

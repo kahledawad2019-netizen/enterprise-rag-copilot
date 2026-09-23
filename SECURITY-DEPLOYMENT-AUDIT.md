@@ -21,7 +21,7 @@ Recommended staging topology:
 
 ```text
 Browser
-  -> Cloudflare Access
+  -> Clerk authentication
   -> Cloudflare Pages (React)
   -> Cloudflare Worker (JWT verification, CORS, rate/body limits)
   -> FastAPI container (server-side authorization and orchestration)
@@ -169,8 +169,9 @@ All items below are **No-Go** until proven in staging:
    RLS and tenant isolation using real connections.
 3. Provision Qdrant server/cloud; build and validate the bge-m3 index; confirm a
    non-zero chunk count and correct permission filtering.
-4. Configure Cloudflare Access and exercise valid, invalid, expired, wrong-AUD
-   and unmapped-user JWTs through the real Worker-to-backend hop.
+4. Configure Clerk and exercise valid, missing, malformed, expired,
+   bad-signature, wrong-origin, wrong-AUD and unmapped-user JWTs through the
+   real Worker-to-backend hop.
 5. Run end-to-end questions through document RAG, Text-to-SQL and multi-source
    routes with the selected hosted model.
 6. Re-run the held-out document evaluation against the deployed index.
@@ -192,7 +193,7 @@ the relevant platform secret store.
 Non-secret decisions/identifiers needed:
 
 - production and staging domains;
-- Cloudflare Access team domain and application AUD;
+- Clerk issuer/JWKS URL, application audience and exact authorized UI origins;
 - email-to-persona mappings;
 - chosen container host (recommended first: Fly/Render; Cloudflare Containers
   if a Workers Paid plan and Cloudflare-only hosting are desired);

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { UserButton, useAuth } from "@clerk/react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { CopilotApiError, ask, getHealth, getMeta } from "./api";
+import { CopilotApiError, ask, getHealth, getMeta, setSessionTokenProvider } from "./api";
 import AnswerCard from "./components/AnswerCard";
 import Composer from "./components/Composer";
 import Documents from "./components/Documents";
@@ -30,6 +31,7 @@ type Theme = "light" | "dark" | "system";
 const THEME_KEY = "copilot.theme";
 
 export default function App() {
+  const { getToken } = useAuth();
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
@@ -45,6 +47,14 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(readTheme);
   const inFlight = useRef<AbortController | null>(null);
   const threadEnd = useRef<HTMLDivElement>(null);
+
+  // Install Clerk's token provider before child passive effects can make API
+  // calls. Tokens remain in Clerk's session machinery and are never copied to
+  // localStorage or a long-lived application variable.
+  useLayoutEffect(() => {
+    setSessionTokenProvider(() => getToken());
+    return () => setSessionTokenProvider(null);
+  }, [getToken]);
 
   // ---- theme ----
   useEffect(() => {
@@ -174,6 +184,7 @@ export default function App() {
         </div>
 
         <div className="header__actions">
+          <UserButton />
           {/* Labelled "Theme: …" because the System *section* is also in this
               header, and two controls reading "System" is a coin toss. */}
           <button

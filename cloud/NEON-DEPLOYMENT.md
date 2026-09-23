@@ -130,8 +130,10 @@ quality are revalidated with the live account.
 ## 6. Cloudflare edge
 
 The Worker receives the same `BACKEND_TOKEN` as a Worker secret. Configure
-Cloudflare Access (`ACCESS_AUD` and `ACCESS_TEAM_DOMAIN`) before public traffic.
-The browser never receives the backend token or database DSN.
+Clerk JWT verification (`CLERK_ISSUER`, `CLERK_JWKS_URL`, `CLERK_AUDIENCE`
+and `CLERK_AUTHORIZED_PARTIES`) before public traffic. The browser receives
+only Clerk's publishable key and short-lived session token; it never receives
+the backend token or database DSN.
 
 After deploying the backend, rebuild the vector index with the exact production
 embedding configuration, run retrieval/Text-to-SQL evaluation, then deploy the
