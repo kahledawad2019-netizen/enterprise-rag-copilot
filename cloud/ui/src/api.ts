@@ -11,12 +11,12 @@ import type {
 /**
  * All network access lives here.
  *
- * The base URL is relative on purpose. In production the UI and the Worker sit
- * behind the same hostname, so a relative path means no CORS preflight and no
- * build-time configuration to get wrong. In development Vite proxies /api to
- * `wrangler dev`, so the same code path runs in both.
+ * The base URL is relative by default. In production the UI and the Worker sit
+ * behind the same hostname, so a relative path means no CORS preflight. A
+ * staging Pages deployment may set VITE_COPILOT_API_BASE to the full Worker
+ * `/api` URL while the project does not yet have a shared custom domain.
  */
-const BASE = "/api";
+const BASE = (import.meta.env.VITE_COPILOT_API_BASE || "/api").replace(/\/$/, "");
 
 type SessionTokenProvider = () => Promise<string | null>;
 
