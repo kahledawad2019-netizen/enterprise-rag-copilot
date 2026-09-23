@@ -514,7 +514,10 @@ def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
         strategies=["dense", "sparse", "hybrid", "reranked"],
         default_strategy="reranked",
         sql_provider=settings.text_to_sql_provider,
-        chat_model=settings.profile.chat_model,
+        # The profile carries the local Ollama default. Hosted deployments can
+        # override it (for example with Groq/Qwen), so report the resolved
+        # model that the running clients actually use.
+        chat_model=settings.chat_model,
         index_version=settings.vector_store.index_version,
         document_count=document_count,
         chunk_count=chunk_count,

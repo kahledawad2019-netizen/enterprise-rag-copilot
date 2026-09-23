@@ -200,6 +200,9 @@ jobs:
       - name: TypeScript
         run: npm run typecheck
 
+      - name: Authentication tests
+        run: npm test
+
       # Production dependencies only. Dev-tree advisories are noise for a
       # Worker bundle that ships none of them.
       - name: Production audit

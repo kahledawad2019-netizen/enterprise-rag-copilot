@@ -38,6 +38,16 @@ export interface Env {
   ACCESS_AUD?: string;
   /** e.g. myteam.cloudflareaccess.com */
   ACCESS_TEAM_DOMAIN?: string;
+  /** Authentication provider: Cloudflare Access or Clerk. */
+  AUTH_PROVIDER?: string;
+  /** Public Clerk JWKS endpoint for the configured instance. */
+  CLERK_JWKS_URL?: string;
+  /** Exact Clerk issuer URL shown in the instance's API keys page. */
+  CLERK_ISSUER?: string;
+  /** Comma-separated UI origins accepted in the token's `azp` claim. */
+  CLERK_AUTHORIZED_PARTIES?: string;
+  /** Expected signed audience. */
+  CLERK_AUDIENCE?: string;
   /** Required outside local development; disabled is fail-closed elsewhere. */
   AUTH_MODE?: string;
   ENVIRONMENT?: string;
@@ -93,14 +103,34 @@ export default {
         );
       }
     } else if (authMode === "required") {
-      if (!env.ACCESS_AUD || !env.ACCESS_TEAM_DOMAIN) {
-        return json(
-          { error: "auth_misconfigured", detail: "Cloudflare Access is required but not configured." },
-          503,
-          cors,
-        );
+      const provider = (env.AUTH_PROVIDER ?? "access").toLowerCase();
+      let verdict: Verdict;
+      if (provider === "clerk") {
+        if (
+          !env.CLERK_JWKS_URL ||
+          !env.CLERK_ISSUER ||
+          !env.CLERK_AUTHORIZED_PARTIES ||
+          !env.CLERK_AUDIENCE
+        ) {
+          return json(
+            { error: "auth_misconfigured", detail: "Clerk authentication is required but not configured." },
+            503,
+            cors,
+          );
+        }
+        verdict = await verifyClerkJwt(request, env);
+      } else if (provider === "access") {
+        if (!env.ACCESS_AUD || !env.ACCESS_TEAM_DOMAIN) {
+          return json(
+            { error: "auth_misconfigured", detail: "Cloudflare Access is required but not configured." },
+            503,
+            cors,
+          );
+        }
+        verdict = await verifyAccessJwt(request, env);
+      } else {
+        return json({ error: "auth_misconfigured", detail: "AUTH_PROVIDER is invalid." }, 503, cors);
       }
-      const verdict = await verifyAccessJwt(request, env);
       if (!verdict.ok) {
         return json({ error: "unauthorized", detail: verdict.reason }, 401, cors);
       }
@@ -200,7 +230,7 @@ function corsHeaders(origin: string | null, env: Env): Record<string, string> {
 
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, CF-Access-Jwt-Assertion",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, CF-Access-Jwt-Assertion",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -297,6 +327,133 @@ async function getSigningKeys(teamDomain: string): Promise<Map<string, CryptoKey
 }
 
 type Verdict = { ok: true; email: string } | { ok: false; reason: string };
+
+async function verifyClerkJwt(request: Request, env: Env): Promise<Verdict> {
+  const authorization = request.headers.get("Authorization");
+  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) return { ok: false, reason: "no Clerk session token on the request" };
+
+  const authorizedParties = (env.CLERK_AUTHORIZED_PARTIES ?? "")
+    .split(",")
+    .map((party) => party.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+
+  const [headerB64, payloadB64, signatureB64] = token.split(".");
+  if (!headerB64 || !payloadB64 || !signatureB64) {
+    return { ok: false, reason: "malformed Clerk token" };
+  }
+
+  let header: { kid?: string; alg?: string; typ?: string };
+  let claims: {
+    aud?: string | string[];
+    azp?: string;
+    email?: string;
+    exp?: number;
+    iss?: string;
+    nbf?: number;
+    sts?: string;
+    sub?: string;
+    act?: unknown;
+  };
+  try {
+    header = JSON.parse(decodeB64Url(headerB64)) as typeof header;
+    claims = JSON.parse(decodeB64Url(payloadB64)) as typeof claims;
+  } catch {
+    return { ok: false, reason: "malformed Clerk token claims" };
+  }
+  if (header.alg !== "RS256") return { ok: false, reason: "unexpected Clerk signing algorithm" };
+  if (header.typ && header.typ !== "JWT") return { ok: false, reason: "unexpected Clerk token type" };
+
+  let keys: Map<string, CryptoKey>;
+  try {
+    keys = await getClerkSigningKeys(env.CLERK_JWKS_URL as string);
+  } catch {
+    return { ok: false, reason: "could not fetch Clerk signing keys" };
+  }
+  const key = header.kid ? keys.get(header.kid) : undefined;
+  if (!key) return { ok: false, reason: "unknown Clerk signing key" };
+
+  let signatureValid = false;
+  try {
+    signatureValid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      b64UrlToBytes(signatureB64),
+      new TextEncoder().encode(`${headerB64}.${payloadB64}`),
+    );
+  } catch {
+    return { ok: false, reason: "malformed Clerk token signature" };
+  }
+  if (!signatureValid) return { ok: false, reason: "bad Clerk token signature" };
+
+  const now = Date.now();
+  if (!claims.exp || claims.exp * 1000 < now) {
+    return { ok: false, reason: "Clerk token expired" };
+  }
+  if (claims.nbf && claims.nbf * 1000 > now + 5_000) {
+    return { ok: false, reason: "Clerk token not active" };
+  }
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!audiences.includes(env.CLERK_AUDIENCE)) {
+    return { ok: false, reason: "Clerk token was issued for a different application" };
+  }
+  if (!claims.azp || !authorizedParties.includes(claims.azp.replace(/\/+$/, ""))) {
+    return { ok: false, reason: "Clerk token came from an unauthorized frontend" };
+  }
+  const issuer = String(claims.iss ?? "").replace(/\/+$/, "");
+  if (issuer !== env.CLERK_ISSUER?.replace(/\/+$/, "")) {
+    return { ok: false, reason: "token was issued by a different Clerk instance" };
+  }
+  if (claims.sts === "pending") {
+    return { ok: false, reason: "Clerk session is not active" };
+  }
+  if (claims.act) {
+    return { ok: false, reason: "impersonated Clerk sessions are not allowed" };
+  }
+  const email = typeof claims.email === "string" ? claims.email.trim().toLowerCase() : "";
+  if (!email || !claims.sub) {
+    return { ok: false, reason: "token has no verified user identity" };
+  }
+  return { ok: true, email };
+}
+
+let clerkJwksCache: { url: string; keys: Map<string, CryptoKey>; fetchedAt: number } | null = null;
+
+async function getClerkSigningKeys(url: string): Promise<Map<string, CryptoKey>> {
+  if (
+    clerkJwksCache &&
+    clerkJwksCache.url === url &&
+    Date.now() - clerkJwksCache.fetchedAt < JWKS_TTL_MS
+  ) {
+    return clerkJwksCache.keys;
+  }
+
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || !parsed.hostname.endsWith(".clerk.accounts.dev")) {
+    throw new Error("untrusted Clerk JWKS URL");
+  }
+  const response = await fetch(parsed.toString());
+  if (!response.ok) throw new Error(`Clerk JWKS fetch failed: ${response.status}`);
+
+  const { keys } = (await response.json()) as { keys: Jwk[] };
+  const imported = new Map<string, CryptoKey>();
+  for (const jwk of keys) {
+    if (jwk.alg !== "RS256" || jwk.kty !== "RSA") continue;
+    imported.set(
+      jwk.kid,
+      await crypto.subtle.importKey(
+        "jwk",
+        { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"],
+      ),
+    );
+  }
+  if (!imported.size) throw new Error("Clerk JWKS contains no supported signing keys");
+  clerkJwksCache = { url: parsed.toString(), keys: imported, fetchedAt: Date.now() };
+  return imported;
+}
 
 async function verifyAccessJwt(request: Request, env: Env): Promise<Verdict> {
   const token =

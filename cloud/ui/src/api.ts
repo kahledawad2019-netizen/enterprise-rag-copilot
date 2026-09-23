@@ -18,6 +18,19 @@ import type {
  */
 const BASE = "/api";
 
+type SessionTokenProvider = () => Promise<string | null>;
+
+let sessionTokenProvider: SessionTokenProvider | null = null;
+
+/**
+ * Clerk owns the short-lived session token. Keeping the provider here lets
+ * every API call fetch a fresh token without persisting it in localStorage or
+ * threading authentication props through every view component.
+ */
+export function setSessionTokenProvider(provider: SessionTokenProvider | null): void {
+  sessionTokenProvider = provider;
+}
+
 export class CopilotApiError extends Error {
   constructor(
     message: string,
@@ -30,11 +43,24 @@ export class CopilotApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await sessionTokenProvider?.();
+  if (!token) {
+    throw new CopilotApiError(
+      "Your session is not ready. Sign in and try again.",
+      "unauthorized",
+      401,
+    );
+  }
+
   let response: Response;
   try {
     response = await fetch(`${BASE}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...init?.headers,
+      },
     });
   } catch {
     // A network-level failure reaches the user as a blank screen otherwise.
