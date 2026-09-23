@@ -56,17 +56,16 @@ enabled = true
 name = "copilot-api-staging"
 
 [env.staging.vars]
-ALLOWED_ORIGINS = "http://localhost:5173,https://staging.copilot-ui.pages.dev"
-BACKEND_URL = "https://copilot-api-staging.fly.dev"
+ALLOWED_ORIGINS = "http://localhost:5173,https://enterprise-rag-copilot-staging.pages.dev"
+BACKEND_URL = "https://virginia-protect-fax-durable.trycloudflare.com"
 ENVIRONMENT = "staging"
 AUTH_MODE = "required"
 AUTH_PROVIDER = "clerk"
 CLERK_AUDIENCE = "enterprise-rag-copilot-api"
 CLERK_ISSUER = "https://promoted-iguana-4747.clerk.accounts.dev"
 CLERK_JWKS_URL = "https://promoted-iguana-4747.clerk.accounts.dev/.well-known/jwks.json"
-# Add the Pages hostname after it is created. Every value must match a token's
-# signed `azp` claim exactly.
-CLERK_AUTHORIZED_PARTIES = "http://localhost:5173"
+# Every value must match a token's signed `azp` claim exactly.
+CLERK_AUTHORIZED_PARTIES = "http://localhost:5173,https://enterprise-rag-copilot-staging.pages.dev"
 
 [[env.staging.ratelimits]]
 name = "ASK_LIMITER"

@@ -260,7 +260,9 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: cloud/api/Dockerfile
+          # Back4app and similar platforms auto-detect the root Dockerfile.
+          # Building that exact entry point prevents staging-only drift.
+          file: Dockerfile
           push: false
           load: true
           tags: enterprise-rag-copilot-api:ci
