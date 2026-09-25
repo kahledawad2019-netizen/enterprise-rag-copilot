@@ -49,6 +49,48 @@ The badge in the sidebar reads **LOCAL — OLLAMA** with the model name.
 
 ---
 
+## Cloud on Streamlit Community Cloud (free, no card)
+
+The hosts that run the Docker image (Render, Cloud Run, Oracle, Fly.io) all
+ask for a card at signup or deploy time. Streamlit Community Cloud does not,
+so it is the default free host. `cloud/streamlit/streamlit_app.py` is a second
+web layer over the **same engine**: the same retrieval, permission filters,
+prompts, refusal rules and citation validation. It uses Groq for chat and
+fastembed in-process for embeddings, like the Docker image.
+
+1. https://share.streamlit.io → sign in with GitHub → **Create app → Deploy a
+   public app from GitHub**.
+2. Repository `kahledawad2019-netizen/enterprise-rag-copilot`, branch `main`
+   (or the feature branch before it is merged), main file path
+   `cloud/streamlit/streamlit_app.py`.
+3. **Advanced settings**: Python **3.12**. Secrets:
+
+   ```toml
+   GROQ_API_KEY = "gsk_..."
+   # optional
+   GROQ_MODEL = "qwen/qwen3.8-27b"
+   ```
+
+4. Deploy. The first start installs dependencies (a few minutes), then
+   downloads the embedding model and builds the index (under a minute).
+   Later visits reuse it until the app restarts.
+
+What differs from the Docker deployment: the Streamlit chat UI instead of the
+React one; no document upload, retrieval lab or evaluation pages; the app
+sleeps after 12 hours without visitors. Limits: 12 questions per minute per
+visitor session and 60 per minute for the whole app (`RATE_LIMIT_PER_MINUTE`,
+`GLOBAL_RATE_LIMIT_PER_MINUTE`). The key lives in Streamlit's secret store and
+is only read on the server.
+
+Run it locally the same way:
+
+```bash
+export GROQ_API_KEY=gsk_...    # or .streamlit/secrets.toml
+local-enterprise-copilot/.venv/Scripts/python -m streamlit run cloud/streamlit/streamlit_app.py
+```
+
+---
+
 ## Cloud (Render + Groq)
 
 ### Why this shape
