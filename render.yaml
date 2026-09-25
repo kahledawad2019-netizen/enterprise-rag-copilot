@@ -1,0 +1,28 @@
+# Render Blueprint for the public cloud demo (free plan).
+#
+#   Render dashboard -> New -> Blueprint -> pick this repository.
+#   Render asks for GROQ_API_KEY once (sync: false); it is stored as a secret
+#   and never written to this file or the image.
+#
+# Everything else has a working default in the Dockerfile. The free plan
+# sleeps after 15 minutes idle; the first request after that waits about a
+# minute while the container starts. The index is baked into the image, so
+# nothing has to be rebuilt on wake.
+services:
+  - type: web
+    name: northwind-copilot
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      # Per-address limit on questions and uploads. Protects the Groq quota.
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "12"

@@ -74,11 +74,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..config import Settings, get_settings
+from ..llm.clients import strip_reasoning
 
 log = logging.getLogger(__name__)
 
@@ -220,6 +222,8 @@ class LLMIntentScreen:
         started = time.perf_counter()
         try:
             payload = self._ask(question)
+            elapsed = (time.perf_counter() - started) * 1000
+            return self._interpret(payload, elapsed)
         except Exception as exc:
             elapsed = (time.perf_counter() - started) * 1000
             log.warning("Intent screening unavailable (%s); rules remain in force", exc)
@@ -230,9 +234,6 @@ class LLMIntentScreen:
                 model=self.settings.chat_model,
                 notes=[f"screen failed: {type(exc).__name__}"],
             )
-
-        elapsed = (time.perf_counter() - started) * 1000
-        return self._interpret(payload, elapsed)
 
     # -- internals ---------------------------------------------------------
     def _ask(self, question: str) -> dict:
@@ -260,10 +261,24 @@ class LLMIntentScreen:
             },
             keep_alive=self.settings.ollama.keep_alive,
         )
-        return json.loads(response["message"]["content"])
+        return json.loads(strip_reasoning(response["message"]["content"]))
 
     def _interpret(self, payload: dict, elapsed_ms: float) -> IntentVerdict:
-        raw = str(payload.get("category", "")).strip().lower()
+        """Validate inside the screening fallback boundary so bad schemas cannot escape."""
+        if not isinstance(payload, dict):
+            raise ValueError("intent response must be an object")
+        for name in ("category", "reason"):
+            if not isinstance(payload.get(name, ""), str):
+                raise ValueError(f"{name} must be a string")
+        confidence = payload.get("confidence", 0.0)
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence)
+        ):
+            raise ValueError("confidence must be a finite number")
+        confidence = min(max(float(confidence), 0.0), 1.0)
+        raw = payload.get("category", "").strip().lower()
         try:
             category = IntentCategory(raw)
         except ValueError:
@@ -276,12 +291,6 @@ class LLMIntentScreen:
                 model=self.settings.chat_model,
                 notes=[f"unknown category {raw!r}"],
             )
-
-        try:
-            confidence = float(payload.get("confidence", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = min(max(confidence, 0.0), 1.0)
 
         reason = str(payload.get("reason", ""))[:120]
         threshold = self.settings.security.intent_confidence_threshold

@@ -22,21 +22,25 @@ the internal object.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
 import os
+import queue
 import secrets
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
+from collections import defaultdict, deque
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # The copilot package lives alongside this file in the image. Adding it here
@@ -46,11 +50,16 @@ from pydantic import BaseModel, Field
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent / "local-enterprise-copilot"
 if (PROJECT_ROOT / "src").exists():
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
+# Sibling modules (uploads.py) must import however this file was loaded -
+# the tests load it by path, not as a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from enterprise_copilot.config import get_settings  # noqa: E402
 from enterprise_copilot.models.evidence import Answer, Evidence  # noqa: E402
 from enterprise_copilot.retrieval.hybrid import UserContext  # noqa: E402
 from enterprise_copilot.routing.orchestrator import Copilot, CopilotTrace  # noqa: E402
+
+import uploads  # noqa: E402
 
 log = logging.getLogger("copilot.api")
 
@@ -106,6 +115,17 @@ PERSONAS: dict[str, dict[str, Any]] = {
         "is_admin": False,
     },
 }
+
+# Questions the document corpus alone can answer, shown when no database is
+# configured, so the first thing a visitor clicks works.
+DOCUMENT_EXAMPLE_QUESTIONS = [
+    "What is the refund policy for annual plans?",
+    "What is the maximum discount a sales rep can approve?",
+    "What happened in INC-2025-0042 and what was the root cause?",
+    "How quickly must a P1 incident receive a first response?",
+    "How is the customer health score calculated?",
+    "Delete all customers",
+]
 
 EXAMPLE_QUESTIONS = [
     "What is our refund policy for annual plans?",
@@ -187,6 +207,15 @@ class PersonaOut(BaseModel):
 
 class MetaResponse(BaseModel):
     app_name: str
+    # Which runtime this is, for the provider badge (LOCAL - OLLAMA or
+    # CLOUD - GROQ). Deliberately no hosts, keys or paths.
+    deployment_mode: Literal["local", "cloud"] = "local"
+    llm_provider: str = ""
+    embedding_provider: str = ""
+    embedding_model: str = ""
+    sql_enabled: bool = True
+    upload_enabled: bool = False
+    max_upload_mb: int = 0
     personas: list[PersonaOut]
     strategies: list[str]
     default_strategy: str
@@ -218,7 +247,28 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 _copilot: Copilot | None = None
-_copilot_lock = threading.RLock()
+# A plain Lock, not an RLock: the streaming endpoint takes it in a worker
+# thread, and nothing re-enters it.
+_copilot_lock = threading.Lock()
+
+# How long a request waits for the copilot before a 503. The copilot is
+# serialised (see /ask); without a bound, one slow generation would queue every
+# other visitor indefinitely.
+LOCK_TIMEOUT_SECONDS = float(os.environ.get("COPILOT_LOCK_TIMEOUT_SECONDS", "180"))
+
+
+def _acquire() -> None:
+    if not _copilot_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+        raise HTTPException(status_code=503, detail="The copilot is busy. Please retry in a moment.")
+
+
+@contextmanager
+def _locked() -> Iterator[None]:
+    _acquire()
+    try:
+        yield
+    finally:
+        _copilot_lock.release()
 
 
 @asynccontextmanager
@@ -254,6 +304,32 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+@app.middleware("http")
+async def limit_upload_body(request: Request, call_next: Any) -> Response:
+    """Refuse an oversized upload from its headers, before the body is read.
+
+    FastAPI parses a multipart body - spooling it to disk - before any
+    endpoint dependency runs, so a size check in the endpoint only runs after
+    an anonymous caller has already written whatever they sent. The declared
+    Content-Length is checked here instead, and a body without one is refused
+    (browsers always send it for a file upload). The server enforces that the
+    body matches its declared length.
+    """
+    if request.method == "POST" and request.url.path.endswith("/documents/upload"):
+        allowed = _max_upload_mb() * 1024 * 1024 + 64 * 1024  # file + multipart framing
+        declared = request.headers.get("content-length")
+        if declared is None:
+            return JSONResponse(
+                status_code=411, content={"error": "length_required", "detail": "Content-Length is required."}
+            )
+        if not declared.isdigit() or int(declared) > allowed:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "too_large", "detail": f"The file is larger than {_max_upload_mb()} MB."},
+            )
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +373,75 @@ def _identity_map() -> dict[str, str]:
     return mapping
 
 
+def auth_mode() -> str:
+    """`token` (default): only a gateway holding BACKEND_TOKEN may call.
+
+    `public`: anyone may call. For a public demo over a synthetic corpus and
+    for the single-user local app. Personas are then selectable exactly as in
+    demo mode, and the expensive endpoints are rate limited per address.
+    """
+    return os.environ.get("API_AUTH_MODE", "token").strip().lower()
+
+
+_RATE_WINDOW_SECONDS = 60.0
+_rate_hits: dict[str, deque[float]] = defaultdict(deque)
+_rate_lock = threading.Lock()
+
+
+def _client_address(request: Request) -> str:
+    """The rate-limit bucket key.
+
+    X-Forwarded-For is client-controlled except for the entries appended by
+    proxies we trust, so the leftmost entry can be anything a caller likes.
+    With TRUSTED_PROXY_HOPS=N (the cloud image sets 1, for Render's proxy)
+    the address the outermost trusted proxy saw is the N-th entry from the
+    right. With 0 - direct exposure, or local - the header is ignored.
+    """
+    hops = int(os.environ.get("TRUSTED_PROXY_HOPS", "0") or 0)
+    if hops > 0:
+        entries = [e.strip() for e in request.headers.get("x-forwarded-for", "").split(",") if e.strip()]
+        if len(entries) >= hops:
+            return entries[-hops]
+    return request.client.host if request.client else "unknown"
+
+
+def _prune_rate_buckets(now: float) -> None:
+    """Drop buckets whose last hit is outside the window. Caller holds the lock."""
+    for key in [k for k, v in _rate_hits.items() if not v or now - v[-1] > _RATE_WINDOW_SECONDS]:
+        del _rate_hits[key]
+
+
+def rate_limit(request: Request) -> None:
+    """Per-address limit on the expensive endpoints.
+
+    Generation spends the operator's hosted-model quota, so a public demo
+    without this is one script away from being unusable for everyone else.
+    In memory and per process: the container runs a single worker by design.
+    """
+    default = "12" if auth_mode() == "public" else "0"
+    limit = int(os.environ.get("RATE_LIMIT_PER_MINUTE", default) or 0)
+    if limit <= 0:
+        return
+    now = time.monotonic()
+    key = _client_address(request)
+    with _rate_lock:
+        hits = _rate_hits[key]
+        while hits and now - hits[0] > _RATE_WINDOW_SECONDS:
+            hits.popleft()
+        if len(hits) >= limit:
+            raise HTTPException(
+                status_code=429, detail="Too many requests. Please wait a minute and try again."
+            )
+        hits.append(now)
+        # Bound memory under address churn: prune by age once the table is
+        # large, and if it is still large (a flood of fresh addresses) start
+        # over rather than grow without limit.
+        if len(_rate_hits) > 10_000:
+            _prune_rate_buckets(now)
+            if len(_rate_hits) > 10_000:
+                _rate_hits.clear()
+
+
 def require_caller(
     authorization: str = Header(default=""),
     asserted_email: str = Header(default="", alias="X-Copilot-User"),
@@ -307,6 +452,9 @@ def require_caller(
     the copilot and the internet. Compared with `compare_digest` so a wrong
     token cannot be recovered one byte at a time from response timing.
     """
+    if auth_mode() == "public":
+        return AuthenticatedCaller(email="public", persona_key=None, demo_mode=True)
+
     expected = os.environ.get("BACKEND_TOKEN", "")
     if not expected:
         raise HTTPException(
@@ -405,16 +553,20 @@ def health(response: Response) -> HealthResponse:
         log.warning("vector-store health check failed: %s", _short(exc))
         checks.append(HealthCheck(name="vector_store", ok=False, detail="unavailable"))
 
-    # Database
-    try:
-        from enterprise_copilot.database.connection import raw_connection
+    # Database. A documents-only deployment has none and must not report
+    # itself unready for lacking one.
+    if not settings.sql_enabled:
+        checks.append(HealthCheck(name="database", ok=True, detail="disabled (documents only)"))
+    else:
+        try:
+            from enterprise_copilot.database.connection import raw_connection
 
-        with raw_connection(settings) as conn:
-            conn.cursor().execute("SELECT 1")
-        checks.append(HealthCheck(name="database", ok=True, detail="reachable"))
-    except Exception as exc:
-        log.warning("database health check failed: %s", _short(exc))
-        checks.append(HealthCheck(name="database", ok=False, detail="unavailable"))
+            with raw_connection(settings) as conn:
+                conn.cursor().execute("SELECT 1")
+            checks.append(HealthCheck(name="database", ok=True, detail="reachable"))
+        except Exception as exc:
+            log.warning("database health check failed: %s", _short(exc))
+            checks.append(HealthCheck(name="database", ok=False, detail="unavailable"))
 
     # Chat model. Which provider is in play decides what "reachable" means,
     # so probe accordingly rather than always asking Ollama - a container
@@ -426,8 +578,9 @@ def health(response: Response) -> HealthResponse:
         if settings.llm.provider == "ollama":
             client = build_chat_client(settings)
             models = [m.get("model", "") for m in client.list().get("models", [])]
-            detail = f"ollama, {len(models)} models available"
-            ok = bool(models)
+            wanted = settings.chat_model
+            ok = wanted in models or f"{wanted}:latest" in models
+            detail = f"ollama, {wanted} " + ("installed" if ok else "NOT installed")
         else:
             # Constructing validates the key and model without spending a
             # token. A real generation on every health check would be billed
@@ -484,7 +637,7 @@ def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
     chunk_count = 0
     try:
         chunk_count = _chunk_count()
-        document_count = len(list(settings.documents_dir.glob("*.md")))
+        document_count = len(_document_paths(settings.documents_dir))
     except Exception as exc:  # a missing index must not break the whole UI
         log.warning("Could not read corpus counts: %s", exc)
 
@@ -498,8 +651,16 @@ def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
     else:
         key, persona = _resolve_persona(caller, None)
         visible_personas = {key: persona}
+    upload_enabled = _uploads_enabled()
     return MetaResponse(
         app_name=settings.app_name,
+        deployment_mode="local" if settings.llm.provider == "ollama" else "cloud",
+        llm_provider=settings.llm.provider,
+        embedding_provider=settings.embeddings.provider,
+        embedding_model=settings.embedding_model,
+        sql_enabled=settings.sql_enabled,
+        upload_enabled=upload_enabled,
+        max_upload_mb=_max_upload_mb() if upload_enabled else 0,
         personas=[
             PersonaOut(
                 key=key,
@@ -521,7 +682,16 @@ def meta(caller: AuthenticatedCaller = Depends(require_caller)) -> MetaResponse:
         index_version=settings.vector_store.index_version,
         document_count=document_count,
         chunk_count=chunk_count,
-        example_questions=EXAMPLE_QUESTIONS,
+        example_questions=EXAMPLE_QUESTIONS if settings.sql_enabled else DOCUMENT_EXAMPLE_QUESTIONS,
+    )
+
+
+def _user_for(persona: dict[str, Any]) -> UserContext:
+    return UserContext(
+        user_name=persona["label"],
+        tenant=persona["tenant"],
+        access_groups=list(persona["access_groups"]),
+        is_admin=persona["is_admin"],
     )
 
 
@@ -531,15 +701,10 @@ def ask(
     request: Request,
     caller: AuthenticatedCaller = Depends(require_caller),
     copilot: Copilot = Depends(get_copilot),
+    _: None = Depends(rate_limit),
 ) -> AskResponse:
     persona_key, persona = _resolve_persona(caller, body.persona)
-
-    user = UserContext(
-        user_name=persona["label"],
-        tenant=persona["tenant"],
-        access_groups=list(persona["access_groups"]),
-        is_admin=persona["is_admin"],
-    )
+    user = _user_for(persona)
 
     # The identity Cloudflare Access verified, if there was one. Recorded on
     # the trace so an audit can tie a query to a person, not just a persona.
@@ -551,13 +716,15 @@ def ask(
         # The current tracer and lazy SQL provider are process-global mutable
         # state. Serialize requests until those internals become request-scoped;
         # otherwise concurrent users can mix spans and provider state.
-        with _copilot_lock:
+        with _locked():
             answer, trace = copilot.ask(
                 body.question,
                 user=user,
                 tenant_id=persona["tenant_id"],
                 strategy=body.strategy,
             )
+    except HTTPException:
+        raise
     except Exception as exc:
         log.exception("ask failed (request %s)", request_id)
         detail = "The request failed. Check the protected backend logs"
@@ -567,6 +734,124 @@ def ask(
 
     elapsed = (time.perf_counter() - started) * 1000
     return _to_response(answer, trace, elapsed)
+
+
+def _sse(kind: str, data: Any) -> str:
+    return f"event: {kind}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@app.post("/ask/stream")
+def ask_stream(
+    body: AskRequest,
+    request: Request,
+    caller: AuthenticatedCaller = Depends(require_caller),
+    copilot: Copilot = Depends(get_copilot),
+    _: None = Depends(rate_limit),
+) -> StreamingResponse:
+    """The same answer as /ask, streamed as server-sent events.
+
+    Events, in order: `sources` (route and evidence, before the first token),
+    `token` (answer text), then `done` (the full /ask response with citations
+    validated) or `error` (a safe message). A CPU-bound local model can take a
+    minute; sources at once and text as it arrives beats a spinner.
+
+    Generation runs in its own thread, which takes and releases the copilot
+    lock itself; the HTTP response only drains a queue. Iterating the
+    generator from the threadpool instead would acquire the lock in one
+    thread and release it from another.
+
+    The producer stops - releasing the lock - when the client goes away (Stop
+    button, closed tab) or after STREAM_DEADLINE_SECONDS. Breaking out closes
+    the model stream too, so an abandoned answer does not keep the model busy
+    and every other visitor queued behind it.
+    """
+    persona_key, persona = _resolve_persona(caller, body.persona)
+    user = _user_for(persona)
+    log.info("stream request as %s", persona_key)
+
+    events: queue.Queue[str | None] = queue.Queue()
+    cancelled = threading.Event()
+    deadline = float(os.environ.get("STREAM_DEADLINE_SECONDS", "300"))
+
+    def produce() -> None:
+        started = time.perf_counter()
+        try:
+            with _locked():
+                trace: CopilotTrace | None = None
+                for kind, payload in copilot.ask_stream(
+                    body.question,
+                    user=user,
+                    tenant_id=persona["tenant_id"],
+                    strategy=body.strategy,
+                ):
+                    if kind == "prepared":
+                        trace = payload.trace
+                        evidence = payload.package.all_evidence if payload.package else []
+                        events.put(
+                            _sse(
+                                "sources",
+                                {
+                                    "trace_id": trace.trace_id,
+                                    "route": trace.routing.route.value if trace.routing else "",
+                                    "sources": [_to_source(e).model_dump() for e in evidence],
+                                },
+                            )
+                        )
+                    elif kind == "token":
+                        events.put(_sse("token", {"text": payload}))
+                    elif kind == "answer" and trace is not None:
+                        elapsed = (time.perf_counter() - started) * 1000
+                        events.put(_sse("done", _to_response(payload, trace, elapsed).model_dump()))
+                    if cancelled.is_set():
+                        log.info("stream stopped: client disconnected")
+                        break  # closes the generator chain, down to the model stream
+                    if time.perf_counter() - started > deadline:
+                        events.put(
+                            _sse(
+                                "error",
+                                {"error": "timeout", "detail": "The answer took too long and was stopped."},
+                            )
+                        )
+                        break
+        except HTTPException as exc:
+            events.put(_sse("error", {"error": "unavailable", "detail": exc.detail}))
+        except Exception:
+            log.exception("streamed ask failed")
+            events.put(_sse("error", {"error": "internal", "detail": "The request failed."}))
+        finally:
+            events.put(None)
+
+    threading.Thread(target=produce, name="ask-stream", daemon=True).start()
+
+    async def drain() -> AsyncIterator[str]:
+        idle = 0.0
+        try:
+            while True:
+                try:
+                    item = events.get_nowait()
+                except queue.Empty:
+                    if await request.is_disconnected():
+                        return
+                    await asyncio.sleep(0.05)
+                    idle += 0.05
+                    if idle >= 15:
+                        idle = 0.0
+                        yield ": keep-alive\n\n"  # proxies drop idle connections
+                    continue
+                idle = 0.0
+                if item is None:
+                    return
+                yield item
+        finally:
+            # Runs on normal end, on disconnect, and when the server cancels
+            # the response task. The producer checks this between tokens.
+            cancelled.set()
+
+    return StreamingResponse(
+        drain(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class RetrieveRequest(BaseModel):
@@ -608,6 +893,7 @@ def retrieve(
     body: RetrieveRequest,
     caller: AuthenticatedCaller = Depends(require_caller),
     copilot: Copilot = Depends(get_copilot),
+    _limited: None = Depends(rate_limit),
 ) -> RetrieveResponse:
     """Run the same query through several strategies so they can be compared.
 
@@ -629,7 +915,7 @@ def retrieve(
     for strategy in body.strategies:
         started = time.perf_counter()
         try:
-            with _copilot_lock:
+            with _locked():
                 results, _ = copilot.retriever.retrieve(
                     body.query, strategy=strategy, user=user, limit=body.limit
                 )
@@ -690,6 +976,7 @@ class DocumentOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
     words: int = 0
     readable: bool = True
+    source: Literal["corpus", "upload"] = "corpus"
 
 
 @app.get("/documents")
@@ -716,9 +1003,9 @@ def documents(
     out: list[DocumentOut] = []
     hidden = 0
 
-    for path in sorted(settings.documents_dir.glob("*.md")):
+    for path in _document_paths(settings.documents_dir):
         try:
-            meta, body = _read_front_matter(path)
+            meta, body = _read_metadata(path)
         except Exception as exc:
             log.warning("could not parse %s: %s", path.name, exc)
             continue
@@ -750,6 +1037,7 @@ def documents(
                 related_docs=_as_list(meta.get("related_docs")),
                 tags=_as_list(meta.get("tags")),
                 words=len(body.split()),
+                source="upload" if path.parent.name == uploads.UPLOAD_SUBDIR else "corpus",
             )
         )
 
@@ -759,6 +1047,134 @@ def documents(
         "hidden_by_permissions": hidden,
         "persona": persona_key,
     }
+
+
+def _document_paths(root: Path) -> list[Path]:
+    """The curated corpus plus anything uploaded, in a stable order."""
+    paths = sorted(root.glob("*.md"))
+    upload_dir = root / uploads.UPLOAD_SUBDIR
+    if upload_dir.exists():
+        paths += sorted(
+            p for p in upload_dir.iterdir() if p.suffix.lower() in {".md", ".pdf", ".docx"}
+        )
+    return paths
+
+
+def _read_metadata(path: Path) -> tuple[dict[str, Any], str]:
+    if path.suffix.lower() == ".md":
+        return _read_front_matter(path)
+    import yaml
+
+    sidecar = path.with_suffix(".meta.yaml")
+    meta = yaml.safe_load(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+    return meta or {}, ""
+
+
+def _uploads_enabled() -> bool:
+    return os.environ.get("UPLOADS_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+
+
+def _max_upload_mb() -> int:
+    return max(1, int(os.environ.get("MAX_UPLOAD_MB", "5")))
+
+
+def _remove_upload(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    path.with_suffix(".meta.yaml").unlink(missing_ok=True)
+
+
+@app.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    _caller: AuthenticatedCaller = Depends(require_caller),
+    copilot: Copilot = Depends(get_copilot),
+    _: None = Depends(rate_limit),
+) -> dict[str, Any]:
+    """Add a document to the knowledge base and index it immediately.
+
+    Indexing is incremental - only new or changed documents are embedded - and
+    reuses the copilot's own vector-store client, because embedded Qdrant
+    allows one per folder. The BM25 index is reloaded afterwards so sparse
+    search sees the new text too.
+
+    Everything from the capacity check to the cleanup runs under the copilot
+    lock, in one worker thread. Checking capacity, writing the file and
+    indexing are then one step as far as any other upload or question can
+    tell: no request can index another's half-written file, and two requests
+    cannot both pass the limit. The request body itself is size-capped before
+    it is parsed (see `limit_upload_body`).
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    if not _uploads_enabled():
+        raise HTTPException(status_code=403, detail="Uploads are disabled on this deployment.")
+
+    settings = get_settings()
+    max_bytes = _max_upload_mb() * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    filename = file.filename or "document"
+    try:
+        uploads.validate(filename, content, max_bytes=max_bytes)
+    except uploads.UploadRejectedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def ingest() -> dict[str, Any]:
+        from enterprise_copilot.ingestion.pipeline import IngestionPipeline
+
+        with _locked():
+            doc_id = uploads.doc_id_for(content)
+            if uploads.existing_upload(settings.documents_dir, doc_id) is not None:
+                # The id is derived from the content: this exact file is
+                # already indexed. Nothing to do, and nothing to overwrite.
+                return {"doc_id": doc_id, "title": uploads.title_for(filename),
+                        "chunks_written": 0, "already_indexed": True}
+
+            limit = int(os.environ.get("MAX_UPLOADED_DOCUMENTS", "25"))
+            if uploads.count_uploads(settings.documents_dir) >= limit:
+                raise HTTPException(
+                    status_code=409, detail="This deployment's upload limit is reached."
+                )
+
+            path, doc_id = uploads.store(
+                filename, content, settings.documents_dir, max_bytes=max_bytes
+            )
+            pipeline = IngestionPipeline(
+                settings, embedder=copilot.retriever.embedder, store=copilot.retriever.store
+            )
+            try:
+                report, manifest = pipeline.build_index()
+                if any(name == path.name for name, _ in report.errors):
+                    raise uploads.UploadRejectedError("The document could not be read.")
+            except Exception:
+                # Undo everything this upload committed: the file, any vector
+                # batches already upserted, and the sparse index derived from
+                # them. Otherwise a half-indexed document stays searchable.
+                _remove_upload(path)
+                try:
+                    copilot.retriever.store.delete_document(doc_id)
+                    pipeline._rebuild_sparse_index()
+                except Exception:
+                    log.exception("rollback of a failed upload was incomplete")
+                raise
+            finally:
+                copilot.retriever.sparse = copilot.retriever._load_sparse()
+
+            return {
+                "doc_id": doc_id,
+                "title": uploads.title_for(filename),
+                "chunks_written": report.chunks_created,
+                "chunk_count": manifest.chunk_count,
+            }
+
+    try:
+        return await run_in_threadpool(ingest)
+    except HTTPException:
+        raise
+    except uploads.UploadRejectedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("indexing the upload failed")
+        raise HTTPException(status_code=500, detail="The document could not be indexed.") from exc
 
 
 def _read_front_matter(path: Path) -> tuple[dict[str, Any], str]:
@@ -894,6 +1310,8 @@ async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse
         400: "bad_request",
         401: "unauthorized",
         403: "forbidden",
+        409: "conflict",
+        429: "rate_limited",
         500: "internal",
         503: "unavailable",
     }
@@ -952,7 +1370,7 @@ def _to_response(answer: Answer, trace: CopilotTrace, elapsed_ms: float) -> AskR
         sources=sources,
         conflicts=list(package.conflicts) if package else [],
         notes=list(package.notes) if package else [],
-        warnings=list(answer.warnings) + list(trace.errors),
+        warnings=list(answer.warnings) + _public_errors(trace.errors),
         sql=sql_detail,
         columns=columns,
         rows=rows,
@@ -966,6 +1384,30 @@ def _to_response(answer: Answer, trace: CopilotTrace, elapsed_ms: float) -> AskR
             "sql_provider": settings.text_to_sql_provider,
         },
     )
+
+
+def _public_errors(errors: list[str]) -> list[str]:
+    """Stage-level messages for the browser.
+
+    The raw exception text - which can hold hosts, storage paths or a
+    provider's error body - stays in the server log and the trace.
+    """
+    messages = {
+        "retrieval": "Document search was unavailable for this question.",
+        "generation": "The language model was unavailable.",
+    }
+    out: list[str] = []
+    for error in errors:
+        stage = error.split(":", 1)[0].strip().lower()
+        if stage in messages:
+            message = messages[stage]
+        elif "sql" in stage:
+            message = "The database step could not complete."
+        else:
+            message = "A pipeline step failed."
+        if message not in out:
+            out.append(message)
+    return out
 
 
 def _to_source(evidence: Evidence) -> SourceRef:

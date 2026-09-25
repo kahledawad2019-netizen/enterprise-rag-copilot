@@ -53,12 +53,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..config import Settings, get_settings
+from ..llm.clients import strip_reasoning
 from ..security.intent_classifier import IntentVerdict, LLMIntentScreen
 
 log = logging.getLogger(__name__)
@@ -378,6 +380,7 @@ class QueryRouter:
     def _classify_with_llm(
         self, question: str, identifiers: list[str], dates: list[str]
     ) -> RoutingDecision | None:
+        """Treat malformed schemas like parse failures, before using model fields."""
         try:
             client = self._client
             if client is None:
@@ -400,17 +403,25 @@ class QueryRouter:
                 },
                 keep_alive=self.settings.ollama.keep_alive,
             )
-            payload = json.loads(response["message"]["content"])
+            payload = json.loads(strip_reasoning(response["message"]["content"]))
+            if not isinstance(payload, dict):
+                raise ValueError("routing response must be an object")
+            for name in ("route", "rewritten_query", "reason"):
+                if not isinstance(payload.get(name, ""), str):
+                    raise ValueError(f"{name} must be a string")
+            for name in ("document_subquestion", "data_subquestion"):
+                if payload.get(name) is not None and not isinstance(payload[name], str):
+                    raise ValueError(f"{name} must be a string or null")
+            confidence = payload.get("confidence", 0.5)
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+            ):
+                raise ValueError("confidence must be a finite number")
+            route = Route(payload.get("route", "").strip().lower())
         except Exception as exc:
             log.warning("LLM routing failed (%s); falling back to heuristics", exc)
-            return None
-
-        try:
-            route = Route(str(payload.get("route", "")).strip().lower())
-        except ValueError:
-            log.warning(
-                "Router returned an unknown route %r; using heuristics", payload.get("route")
-            )
             return None
 
         # The model must not refuse or clarify: those are rule decisions, and
@@ -426,7 +437,7 @@ class QueryRouter:
             original_query=question,
             rewritten_query=rewritten,
             reason=str(payload.get("reason", ""))[:200],
-            confidence=float(payload.get("confidence", 0.5) or 0.5),
+            confidence=float(confidence),
             decided_by="llm",
             identifiers=identifiers,
             dates=dates,

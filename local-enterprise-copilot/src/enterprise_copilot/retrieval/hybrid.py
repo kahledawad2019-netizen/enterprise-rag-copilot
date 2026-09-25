@@ -126,10 +126,10 @@ class HybridRetriever:
 
     def _load_sparse(self) -> BM25Index:
         """Load the cached BM25 corpus, rebuilding from Qdrant if absent."""
-        from ..ingestion.pipeline import IngestionPipeline
+        from ..ingestion.pipeline import sparse_index_path
 
         index = BM25Index()
-        path = IngestionPipeline(self.settings).sparse_index_path
+        path = sparse_index_path(self.settings)
         if index.load(path):
             return index
 
@@ -285,19 +285,22 @@ class HybridRetriever:
             exclude_doc_types=["security_test"],
         )
 
-    def _allowed_chunk_ids(self, filters: RetrievalFilter) -> set[str] | None:
+    def _allowed_chunk_ids(self, filters: RetrievalFilter) -> set[str]:
         """Chunk ids permitted by the filter, for BM25.
 
         BM25 has no payload filtering of its own, so the permitted set is
         computed from the vector store and applied *before* ranking. Filtering
         after ranking would let forbidden chunks occupy top-k slots and quietly
         shrink the user's result set.
+
+        A failed lookup permits nothing, including for admins whose version
+        and document-type restrictions still apply.
         """
         try:
             chunks = self.store.all_chunks()
         except Exception as exc:
             log.warning("Could not compute the allowed chunk set: %s", exc)
-            return None
+            return set()
 
         allowed: set[str] = set()
         for chunk in chunks:

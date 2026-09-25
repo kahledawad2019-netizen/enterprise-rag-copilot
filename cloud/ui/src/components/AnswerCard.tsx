@@ -5,7 +5,7 @@ import type { AskResponse, Route, SourceRef, Timings } from "../types";
 
 type Tab = "answer" | "sources" | "sql" | "data" | "trace";
 
-const ROUTE_LABEL: Record<Route, string> = {
+export const ROUTE_LABEL: Record<Route, string> = {
   document_rag: "Documents",
   text_to_sql: "Database",
   multi_source: "Documents + database",
@@ -22,7 +22,7 @@ const ROUTE_TONE: Record<Route, string> = {
   clarify: "badge--warn",
 };
 
-const STATUS_TONE: Record<string, string> = {
+export const STATUS_TONE: Record<string, string> = {
   answered: "badge--ok",
   partial: "badge--warn",
   insufficient_evidence: "badge--warn",
@@ -31,7 +31,7 @@ const STATUS_TONE: Record<string, string> = {
   clarification_needed: "badge--warn",
 };
 
-const STATUS_LABEL: Record<string, string> = {
+export const STATUS_LABEL: Record<string, string> = {
   answered: "Answered",
   partial: "Partially answered",
   insufficient_evidence: "Not enough evidence",
@@ -154,7 +154,7 @@ function SourcesPane({ sources }: { sources: SourceRef[] }) {
   );
 }
 
-function SqlPane({ result }: { result: AskResponse }) {
+export function SqlPane({ result }: { result: AskResponse }) {
   const sql = result.sql;
   if (!sql) return <div className="pane empty">No query was generated.</div>;
 
@@ -204,7 +204,7 @@ function SqlPane({ result }: { result: AskResponse }) {
   );
 }
 
-function DataPane({ result }: { result: AskResponse }) {
+export function DataPane({ result }: { result: AskResponse }) {
   if (!result.rows.length) return <div className="pane empty">The query returned no rows.</div>;
 
   // Showing everything would make a 5,000-row result unusable and slow. The
@@ -264,7 +264,7 @@ const STAGE_LABEL: Record<keyof Timings, string> = {
   total: "Total",
 };
 
-function TracePane({ result }: { result: AskResponse }) {
+export function TracePane({ result }: { result: AskResponse }) {
   const stages = (Object.keys(STAGE_LABEL) as Array<keyof Timings>)
     .filter((key) => key !== "total" && typeof result.timings_ms[key] === "number")
     .map((key) => ({ key, ms: result.timings_ms[key] as number }));

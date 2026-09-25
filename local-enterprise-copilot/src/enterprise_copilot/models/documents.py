@@ -51,6 +51,7 @@ class DocumentType(StrEnum):
     CHURN_GUIDE = "churn_guide"
     HEALTH_METHODOLOGY = "health_methodology"
     SECURITY_TEST = "security_test"
+    UPLOADED = "uploaded"  # added by a user through the UI; no curated type
 
 
 class AuthorityLevel(StrEnum):

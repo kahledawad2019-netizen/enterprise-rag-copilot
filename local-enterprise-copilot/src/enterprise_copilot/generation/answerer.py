@@ -88,28 +88,37 @@ class Answerer:
     ) -> Answer:
         """Generate an answer from an evidence package and validate its citations."""
         started = time.perf_counter()
-
-        if package.is_empty:
-            # The notes must reach the model here too. Without them it is told
-            # only "no evidence", has no idea why, and fills the silence with
-            # something plausible - a failed query produced advice to "check
-            # the Sales Reports", which do not exist.
-            prompt = NO_EVIDENCE_TEMPLATE.format(question=package.question) + _build_notes(package)
-            status = AnswerStatus.INSUFFICIENT_EVIDENCE
-        else:
-            conflict_note = _build_notes(package)
-            prompt = ANSWER_TEMPLATE.format(
-                question=package.question,
-                evidence=format_evidence_block(package.all_evidence),
-                conflict_note=conflict_note,
-            )
-            status = AnswerStatus.ANSWERED
-
+        prompt, status = self._prompt_for(package)
         text, tokens_in, tokens_out = self._generate(prompt)
+        return self.finish(
+            package,
+            text,
+            status=status,
+            started=started,
+            trace_id=trace_id,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+        )
 
+    def finish(
+        self,
+        package: EvidencePackage,
+        text: str,
+        *,
+        status: AnswerStatus,
+        started: float,
+        trace_id: str = "",
+        tokens_in: int | None = None,
+        tokens_out: int | None = None,
+    ) -> Answer:
+        """Wrap generated text as an Answer and validate its citations.
+
+        Shared by the batch and streaming paths so a streamed answer is judged
+        by exactly the same rules as a batch one.
+        """
         answer = Answer(
             question=package.question,
-            text=text,
+            text=text.strip(),
             status=status,
             evidence=package,
             model=self.settings.chat_model,
@@ -121,22 +130,25 @@ class Answerer:
         )
         return assess_answer(answer)
 
-    def stream_answer(self, package: EvidencePackage) -> Iterator[str]:
-        """Token stream for the Streamlit UI.
-
-        Citation validation cannot run until the text is complete, so the UI
-        must call `assess_answer` on the accumulated text once the stream ends.
-        """
+    def _prompt_for(self, package: EvidencePackage) -> tuple[str, AnswerStatus]:
         if package.is_empty:
-            prompt = NO_EVIDENCE_TEMPLATE.format(question=package.question)
-        else:
-            conflict_note = _build_notes(package)
-            prompt = ANSWER_TEMPLATE.format(
-                question=package.question,
-                evidence=format_evidence_block(package.all_evidence),
-                conflict_note=conflict_note,
-            )
+            # The notes must reach the model here too. Without them it is told
+            # only "no evidence", has no idea why, and fills the silence with
+            # something plausible - a failed query produced advice to "check
+            # the Sales Reports", which do not exist.
+            prompt = NO_EVIDENCE_TEMPLATE.format(question=package.question) + _build_notes(package)
+            return prompt, AnswerStatus.INSUFFICIENT_EVIDENCE
+        prompt = ANSWER_TEMPLATE.format(
+            question=package.question,
+            evidence=format_evidence_block(package.all_evidence),
+            conflict_note=_build_notes(package),
+        )
+        return prompt, AnswerStatus.ANSWERED
 
+    def stream_answer(self, package: EvidencePackage) -> Iterator[str]:
+        """Token stream. Pass the joined text to `finish` once it ends:
+        citation validation cannot run until the text is complete."""
+        prompt, _ = self._prompt_for(package)
         try:
             stream = self._client.chat(
                 model=self.settings.chat_model,

@@ -82,6 +82,12 @@ vanna = [
     "vanna[chromadb,ollama]==2.0.2",
 ]
 
+# In-process ONNX embeddings (EMBEDDING_PROVIDER=fastembed): what the cloud
+# image uses, and what a machine without Ollama can use to build an index.
+cloud = [
+    "fastembed>=0.5,<1",
+]
+
 # Local trace UI. Entirely optional; the app runs without it.
 phoenix = [
     "arize-phoenix>=5.0",
@@ -100,6 +106,8 @@ dev = [
     # a machine that happened to have fastapi reported them as passing.
     # Declared here so the suite is self-contained.
     "fastapi>=0.115,<1",
+    # The upload endpoint's multipart parsing, exercised by the API tests.
+    "python-multipart>=0.0.18",
     "jupyter>=1.1",
     "nbformat>=5.10",
     "matplotlib>=3.9",

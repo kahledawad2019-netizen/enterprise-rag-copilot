@@ -29,6 +29,9 @@ ENV_FILE = PROJECT_ROOT / ".env"
 
 KEYRING_SERVICE = "enterprise-copilot"
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+
 
 def resolve_path(value: object) -> object:
     """Resolve a relative path against the project root, not the CWD.
@@ -216,11 +219,17 @@ class LLMSettings(BaseSettings):
         protected_namespaces=(),
     )
 
-    provider: Literal["ollama", "openai"] = "ollama"
+    # "groq" is "openai" with Groq's endpoint and GROQ_* variables filled in.
+    provider: Literal["ollama", "openai", "groq"] = "ollama"
 
     # OpenAI-compatible endpoint. Groq is https://api.groq.com/openai/v1
-    base_url: str = "https://api.groq.com/openai/v1"
+    base_url: str = GROQ_BASE_URL
     api_key: SecretStr | None = None
+
+    # Groq's own variable names, accepted so a deployment can be configured
+    # with GROQ_API_KEY / GROQ_MODEL as Groq documents them. LLM_* wins.
+    groq_api_key: SecretStr | None = Field(default=None, validation_alias="GROQ_API_KEY")
+    groq_model: str = Field(default=DEFAULT_GROQ_MODEL, validation_alias="GROQ_MODEL")
 
     # Blank means "use the profile's model", which is right for Ollama and
     # wrong for a hosted API, where the name is provider-specific.
@@ -228,12 +237,22 @@ class LLMSettings(BaseSettings):
 
     timeout_seconds: float = 120.0
 
-    @field_validator("api_key", mode="before")
+    @field_validator("api_key", "groq_api_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _apply_groq_defaults(self) -> LLMSettings:
+        if self.provider == "groq":
+            object.__setattr__(self, "base_url", GROQ_BASE_URL)
+            if self.api_key is None and self.groq_api_key is not None:
+                object.__setattr__(self, "api_key", self.groq_api_key)
+            if not self.model:
+                object.__setattr__(self, "model", self.groq_model or DEFAULT_GROQ_MODEL)
+        return self
 
     @property
     def is_hosted(self) -> bool:
@@ -264,7 +283,10 @@ class EmbeddingSettings(BaseSettings):
         protected_namespaces=(),
     )
 
-    provider: Literal["ollama", "openai", "cloudflare"] = "ollama"
+    provider: Literal["ollama", "openai", "cloudflare", "fastembed"] = "ollama"
+
+    # fastembed only: where ONNX model files are cached.
+    cache_dir: str = ""
 
     # --- OpenAI-compatible ---
     base_url: str = "https://api.openai.com/v1"
@@ -517,7 +539,22 @@ class Settings(BaseSettings):
     profile_name: ProfileName = Field(default=ProfileName.STANDARD, alias="COPILOT_PROFILE")
     demo_mode: bool = Field(default=False, alias="COPILOT_DEMO_MODE")
     random_seed: int = Field(default=20240601, alias="COPILOT_SEED")
-    database_backend: Literal["sqlserver", "postgresql"] = Field(
+    # "none" runs documents-only: no database is contacted, Text-to-SQL is
+    # disabled, and data questions are answered from documents with an
+    # explicit note that live figures are unavailable. The cloud demo and a
+    # fresh local install use this.
+    # Whether the router consults the chat model (semantic intent screen and
+    # route classification) after its deterministic rules.
+    #   auto    only when it earns its cost: SQL is enabled (the route decides
+    #           whether a query runs) or the model is hosted and fast. In a
+    #           documents-only deployment on a local CPU model the two calls
+    #           cost ~50 s per question while every route ends in document
+    #           search anyway, and there is no database to protect.
+    #   always / never   force it.
+    # The destructive-intent rules run in every mode.
+    router_llm: Literal["auto", "always", "never"] = Field(default="auto", alias="ROUTER_LLM")
+
+    database_backend: Literal["sqlserver", "postgresql", "none"] = Field(
         default="sqlserver", alias="DATABASE_BACKEND"
     )
 
@@ -557,6 +594,16 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def sql_enabled(self) -> bool:
+        return self.database_backend != "none"
+
+    @property
+    def router_uses_llm(self) -> bool:
+        if self.router_llm != "auto":
+            return self.router_llm == "always"
+        return self.sql_enabled or self.llm.is_hosted
+
+    @property
     def sql_dialect(self) -> Literal["tsql", "postgres"]:
         return "postgres" if self.database_backend == "postgresql" else "tsql"
 
@@ -578,6 +625,8 @@ class Settings(BaseSettings):
     def embedding_model(self) -> str:
         if self.embeddings.model:
             return self.embeddings.model
+        if self.embeddings.provider == "fastembed":
+            return "nomic-ai/nomic-embed-text-v1.5-Q"
         return self.ollama.embedding_model or self.profile.embedding_model
 
     def ensure_directories(self) -> None:

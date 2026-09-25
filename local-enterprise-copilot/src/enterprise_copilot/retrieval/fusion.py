@@ -28,6 +28,7 @@ fusing rather than instead of fusing.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import defaultdict
 
@@ -112,6 +113,9 @@ def deduplicate(results: list[ScoredChunk]) -> list[ScoredChunk]:
     and the chunker's overlap window repeats a paragraph. Two copies of the
     same sentence in the evidence wastes context and makes the model more
     confident than the evidence warrants.
+
+    Hash the full normalized text so passages sharing a long introduction
+    retain their distinct conclusions.
     """
     seen_ids: set[str] = set()
     seen_text: set[str] = set()
@@ -121,7 +125,8 @@ def deduplicate(results: list[ScoredChunk]) -> list[ScoredChunk]:
         chunk_id = item.chunk.chunk_id
         if chunk_id in seen_ids:
             continue
-        fingerprint = " ".join(item.chunk.text.lower().split())[:300]
+        normalized = " ".join(item.chunk.text.lower().split())
+        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         if fingerprint in seen_text:
             continue
         seen_ids.add(chunk_id)
@@ -155,6 +160,9 @@ def maximal_marginal_relevance(
     detect the near-duplicate case this is guarding against.
 
     lambda = 1.0 reduces to plain top-k; lower values buy diversity.
+
+    Shift negative scores before scaling so relevance stays non-negative and
+    preserves score order. Equal scores carry equal relevance.
     """
     if not results:
         return []
@@ -167,12 +175,14 @@ def maximal_marginal_relevance(
     selected: list[ScoredChunk] = [results[0]]
     remaining = list(results[1:])
 
-    max_score = max(r.score for r in results) or 1.0
+    scale = max(abs(r.score) for r in results) or 1.0
+    offset = min(0.0, min(r.score / scale for r in results))
+    max_score = max(r.score / scale for r in results) - offset
 
     while remaining and len(selected) < limit:
         best_item, best_value = None, float("-inf")
         for candidate in remaining:
-            relevance = candidate.score / max_score
+            relevance = (candidate.score / scale - offset) / max_score if max_score else 1.0
             candidate_tokens = token_sets[candidate.chunk.chunk_id]
             similarity = max(
                 (_jaccard(candidate_tokens, token_sets[s.chunk.chunk_id]) for s in selected),
@@ -210,6 +220,9 @@ def apply_authority_preference(results: list[ScoredChunk]) -> list[ScoredChunk]:
     favour of binding policy; it must never let an irrelevant policy outrank a
     highly relevant guidance document, because that would be a different and
     worse failure.
+
+    Add a fraction of the score magnitude so authority improves negative
+    scores too, rather than multiplying them into a larger penalty.
     """
     from ..models.documents import AuthorityLevel
 
@@ -223,7 +236,7 @@ def apply_authority_preference(results: list[ScoredChunk]) -> list[ScoredChunk]:
             rank = AuthorityLevel(item.chunk.authority).rank
         except ValueError:
             rank = 2
-        copy.score = item.score * (1.0 + 0.0125 * (rank - 1))
+        copy.score = item.score + abs(item.score) * 0.0125 * (rank - 1)
         adjusted.append(copy)
 
     adjusted.sort(key=lambda r: r.score, reverse=True)

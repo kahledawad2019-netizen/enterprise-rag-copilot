@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -102,6 +103,16 @@ class CopilotTrace:
         }
 
 
+@dataclass
+class Prepared:
+    """The result of routing and evidence gathering, before generation."""
+
+    trace: CopilotTrace
+    answer: Answer | None = None  # set for terminal routes
+    package: EvidencePackage | None = None
+    sql_result: QueryResult | None = None
+
+
 class Copilot:
     """The assembled system."""
 
@@ -143,6 +154,68 @@ class Copilot:
         strategy: str = "reranked",
         approve_sql: bool = False,
     ) -> tuple[Answer, CopilotTrace]:
+        prepared = self.prepare(
+            question, user=user, tenant_id=tenant_id, strategy=strategy, approve_sql=approve_sql
+        )
+        if prepared.answer is not None:
+            return prepared.answer, prepared.trace
+        return self._generate(prepared), prepared.trace
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        user: UserContext | None = None,
+        tenant_id: int | None = None,
+        strategy: str = "reranked",
+    ) -> Iterator[tuple[str, Any]]:
+        """Stream an answer as events.
+
+        Yields `("prepared", Prepared)` once evidence is gathered - so a UI can
+        show sources before the first token - then `("token", str)` for each
+        piece of text, and finally `("answer", Answer)`, validated exactly
+        like a batch answer.
+        """
+        prepared = self.prepare(question, user=user, tenant_id=tenant_id, strategy=strategy)
+        yield "prepared", prepared
+        if prepared.answer is not None:
+            yield "answer", prepared.answer
+            return
+
+        assert prepared.package is not None
+        trace = prepared.trace
+        started = time.perf_counter()
+        parts: list[str] = []
+        try:
+            for token in self.answerer.stream_answer(prepared.package):
+                parts.append(token)
+                yield "token", token
+            _, status = self.answerer._prompt_for(prepared.package)
+            answer = self.answerer.finish(
+                prepared.package,
+                "".join(parts),
+                status=status,
+                started=started,
+                trace_id=trace.trace_id,
+            )
+        except GenerationError as exc:
+            answer = self._generation_failed(prepared, exc)
+        trace.stage_ms["generation"] = (time.perf_counter() - started) * 1000
+        self._attach_sql(prepared, answer)
+        self._finish(trace, answer)
+        yield "answer", answer
+
+    def prepare(
+        self,
+        question: str,
+        *,
+        user: UserContext | None = None,
+        tenant_id: int | None = None,
+        strategy: str = "reranked",
+        approve_sql: bool = False,
+    ) -> Prepared:
+        """Route and gather evidence. Returns a finished answer for terminal
+        routes (refuse, clarify), otherwise the evidence package to answer from."""
         user = user or UserContext.admin()
         self.tracer.reset()
         trace = CopilotTrace(
@@ -155,7 +228,7 @@ class Copilot:
         # ---- route ----
         started = time.perf_counter()
         with self.tracer.span("routing", question=question, user=user.user_name) as span:
-            decision = self.router.route(question)
+            decision = self.router.route(question, use_llm=self.settings.router_uses_llm)
             span.set(
                 route=decision.route.value,
                 decided_by=decision.decided_by,
@@ -169,21 +242,29 @@ class Copilot:
         if decision.route is Route.REFUSE:
             answer = self._refuse(question, decision, trace)
             self._finish(trace, answer)
-            return answer, trace
+            return Prepared(trace=trace, answer=answer)
         if decision.route is Route.CLARIFY:
             answer = self._clarify(question, decision, trace)
             self._finish(trace, answer)
-            return answer, trace
+            return Prepared(trace=trace, answer=answer)
 
         # ---- gather evidence ----
         document_evidence: list[Evidence] = []
         sql_evidence: list[Evidence] = []
         sql_result: QueryResult | None = None
 
-        if decision.needs_documents:
+        # Documents-only deployments (DATABASE_BACKEND=none) never touch the
+        # database. A data question still searches the documents - the KPI
+        # glossary or a policy often answers part of it - and the model is told
+        # plainly that live figures are unavailable, rather than waiting on a
+        # connection timeout that can never succeed.
+        sql_available = self.settings.sql_enabled
+        needs_documents = decision.needs_documents or (decision.needs_sql and not sql_available)
+
+        if needs_documents:
             document_evidence = self._gather_documents(decision, user, strategy, trace)
 
-        if decision.needs_sql:
+        if decision.needs_sql and sql_available:
             sql_evidence, sql_result = self._gather_sql(
                 decision, user, tenant_id, trace, approve_sql
             )
@@ -200,7 +281,14 @@ class Copilot:
         # idea why, and invents a plausible-sounding non-answer. It happened:
         # a failed query produced advice to "check the Sales Dashboard", which
         # does not exist.
-        if decision.needs_sql and not sql_evidence:
+        if decision.needs_sql and not sql_available:
+            package.notes.append(
+                "Live database queries are not enabled in this deployment, so no measured "
+                "figures (counts, totals, rankings) are available. Answer only what the "
+                "documents support, and state plainly that the data part of the question "
+                "cannot be answered here. Do NOT invent figures."
+            )
+        elif decision.needs_sql and not sql_evidence:
             if trace.sql_blocked_reason:
                 package.notes.append(
                     f"The database query was blocked by the safety guard: "
@@ -224,7 +312,11 @@ class Copilot:
                 "Policy statements are cited [D...]; measured values are cited [S...]."
             )
 
-        # ---- answer ----
+        return Prepared(trace=trace, package=package, sql_result=sql_result)
+
+    def _generate(self, prepared: Prepared) -> Answer:
+        assert prepared.package is not None
+        package, trace = prepared.package, prepared.trace
         started = time.perf_counter()
         try:
             with self.tracer.span(
@@ -240,24 +332,34 @@ class Copilot:
                     model=answer.model,
                 )
         except GenerationError as exc:
-            trace.errors.append(f"generation: {exc}")
-            answer = Answer(
-                question=question,
-                text=f"The answer could not be generated: {exc}",
-                status=AnswerStatus.INSUFFICIENT_EVIDENCE,
-                evidence=package,
-                trace_id=trace.trace_id,
-            )
+            answer = self._generation_failed(prepared, exc)
         trace.stage_ms["generation"] = (time.perf_counter() - started) * 1000
 
-        if sql_result is not None:
-            answer.generated_sql = sql_result.executed_sql
-            answer.sql_row_count = sql_result.row_count
-        elif trace.generated_sql:
-            answer.generated_sql = trace.generated_sql
-
+        self._attach_sql(prepared, answer)
         self._finish(trace, answer)
-        return answer, trace
+        return answer
+
+    def _generation_failed(self, prepared: Prepared, exc: Exception) -> Answer:
+        # The detail stays in the trace and the log; the user-facing text
+        # must not carry provider error bodies, hosts or paths.
+        prepared.trace.errors.append(f"generation: {exc}")
+        log.warning("Generation failed: %s", exc)
+        return Answer(
+            question=prepared.trace.question,
+            text="The answer could not be generated because the language model is "
+            "unavailable right now. Please try again shortly.",
+            status=AnswerStatus.INSUFFICIENT_EVIDENCE,
+            evidence=prepared.package,
+            trace_id=prepared.trace.trace_id,
+        )
+
+    @staticmethod
+    def _attach_sql(prepared: Prepared, answer: Answer) -> None:
+        if prepared.sql_result is not None:
+            answer.generated_sql = prepared.sql_result.executed_sql
+            answer.sql_row_count = prepared.sql_result.row_count
+        elif prepared.trace.generated_sql:
+            answer.generated_sql = prepared.trace.generated_sql
 
     def _finish(self, trace: CopilotTrace, answer: Answer) -> None:
         """Write the trace to disk. Never allowed to fail the request."""

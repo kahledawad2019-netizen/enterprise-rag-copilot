@@ -23,6 +23,8 @@
 # --- web layer ---
 fastapi>=0.115,<1
 uvicorn[standard]>=0.32,<1
+# Multipart form parsing for document upload (/documents/upload).
+python-multipart>=0.0.18
 
 # --- configuration & typed models ---
 pydantic>=2.9,<3
@@ -42,6 +44,10 @@ rank-bm25>=0.2.2
 
 # --- inference ---
 ollama>=0.4
+# In-process ONNX embeddings for the cloud image: no GPU, no Ollama and no
+# second API key. nomic-embed-text-v1.5 is the same model family the local
+# Ollama index uses, so retrieval behaves alike in both modes.
+fastembed>=0.5,<1
 
 # --- document ingestion ---
 pypdf>=5.0

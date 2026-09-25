@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -144,25 +145,39 @@ class OpenAICompatChatClient:
         if response.status_code != 200:
             raise ChatClientError(_http_error(self.base_url, response))
 
-        for raw in response.iter_lines(decode_unicode=True):
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8", errors="replace")
-            if not raw or not raw.startswith("data:"):
-                continue
-            data = raw[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue  # keep-alive padding, not a message
+        visible = ReasoningFilter()
+        finished = False
+        try:
+            for raw in response.iter_lines(decode_unicode=True):
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                if not raw or not raw.startswith("data:"):
+                    continue
+                data = raw[5:].strip()
+                if data == "[DONE]":
+                    finished = True
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue  # keep-alive padding, not a message
 
-            choices = chunk.get("choices") or []
-            delta = (choices[0].get("delta") or {}) if choices else {}
-            yield {
-                "message": {"content": delta.get("content") or ""},
-                "done": bool(choices and choices[0].get("finish_reason")),
-            }
+                if chunk.get("error"):
+                    # An error mid-stream arrives as an ordinary data event on
+                    # an HTTP 200. Ignoring it would end the answer silently.
+                    message = (chunk["error"] or {}).get("message", "stream error")
+                    raise ChatClientError(f"{self.base_url} reported an error mid-stream: {message}")
+
+                choices = chunk.get("choices") or []
+                delta = (choices[0].get("delta") or {}) if choices else {}
+                done = bool(choices and choices[0].get("finish_reason"))
+                finished = finished or done
+                yield {"message": {"content": visible.feed(delta.get("content") or "")}, "done": done}
+        finally:
+            response.close()
+
+        if not finished:
+            raise ChatClientError(f"{self.base_url} closed the stream before the answer finished.")
 
 
 def _translate_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -194,7 +209,7 @@ def _to_ollama_shape(body: dict[str, Any]) -> dict[str, Any]:
 
     usage = body.get("usage") or {}
     return {
-        "message": {"role": "assistant", "content": content},
+        "message": {"role": "assistant", "content": strip_reasoning(content)},
         "done": True,
         # Named as Ollama names them, because that is what the call sites read
         # when they record token counts on a trace.
@@ -302,6 +317,30 @@ class CloudflareEmbeddingClient:
         return {"embeddings": _extract_cf_vectors(body, model)}
 
 
+class FastEmbedClient:
+    """In-process ONNX embeddings via fastembed. No server, no key, CPU only.
+
+    This is the cloud default: a free container has no GPU and no Ollama, and
+    a hosted embedding API would add a second credential. The model is
+    downloaded once (at image build time in the Dockerfile) and cached.
+    """
+
+    def __init__(self, model: str, cache_dir: str | None = None) -> None:
+        from fastembed import TextEmbedding
+
+        self.model = model
+        self._model = TextEmbedding(model_name=model, cache_dir=cache_dir)
+
+    def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:
+        try:
+            vectors = [v.tolist() for v in self._model.embed(input)]
+        except Exception as exc:
+            raise EmbeddingClientError(
+                f"fastembed failed for {self.model}: {type(exc).__name__}: {exc}"
+            ) from exc
+        return {"embeddings": vectors}
+
+
 def _extract_cf_vectors(body: dict[str, Any], model: str) -> list[list[float]]:
     """Pull the vectors out, tolerating more than one documented shape.
 
@@ -338,12 +377,182 @@ def _extract_cf_vectors(body: dict[str, Any], model: str) -> list[list[float]]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Ollama
+# ---------------------------------------------------------------------------
+
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
+
+# Installed-model preference for the local chat default, best first. Instruct
+# (non-reasoning) models come first: on a CPU a reasoning model spends most of
+# its budget thinking, and the router and answerer each pay that cost.
+PREFERRED_OLLAMA_CHAT_MODELS: tuple[str, ...] = (
+    "qwen3:4b-instruct-2507-q4_K_M",
+    "qwen3:4b-instruct",
+    "qwen2.5:7b-instruct",
+    "llama3.1:8b",
+    "qwen2.5:3b-instruct",
+    "llama3.2:3b",
+    "qwen3:4b",
+    "qwen3:8b",
+)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove `<think>...</think>` blocks, including an unterminated one."""
+    return _THINK_BLOCK.sub("", text).strip()
+
+
+class ReasoningFilter:
+    """Drops `<think>...</think>` from a token stream whose tags may be split
+    across chunks. Feed each chunk; get back the visible text."""
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        text = self._pending + chunk
+        self._pending = ""
+        out: list[str] = []
+        while text:
+            tag = "</think>" if self._in_think else "<think>"
+            index = text.lower().find(tag)
+            if index >= 0:
+                if not self._in_think:
+                    out.append(text[:index])
+                text = text[index + len(tag) :]
+                self._in_think = not self._in_think
+                continue
+            # Hold back a possible partial tag at the end of the chunk.
+            keep = next(
+                (n for n in range(len(tag) - 1, 0, -1) if text.lower().endswith(tag[:n])), 0
+            )
+            if not self._in_think:
+                out.append(text[: len(text) - keep])
+            self._pending = text[len(text) - keep :]
+            text = ""
+        return "".join(out)
+
+
+class OllamaChatClient:
+    """`ollama.Client` with reasoning models handled in one place.
+
+    Reasoning models (qwen3 thinking builds, deepseek-r1, gpt-oss) behave
+    differently from instruct models in three ways that each broke a call site:
+
+    * Some builds cannot stop thinking. `think=False` on qwen3:4b-thinking
+      makes the reasoning land *in the answer content* instead of disappearing.
+      So `think` is never sent: Ollama's default for such a model already puts
+      the reasoning on its own channel, which is discarded. (Ollama reports
+      "thinking" for instruct builds too, whose default is not to think, so
+      forcing `think=True` would be wrong for them.)
+    * The reasoning counts against `num_predict`. With the answer budget of an
+      instruct model, the model can finish thinking with no tokens left and
+      return an empty answer, which downstream reads as "no evidence".
+      The budget is raised by `thinking_budget` for these models.
+    * An empty answer is raised as an error rather than returned.
+
+    Everything else is delegated to the wrapped client unchanged.
+    """
+
+    def __init__(self, host: str, timeout: float, *, thinking_budget: int = 3072) -> None:
+        import ollama
+
+        self._client = ollama.Client(host, timeout=timeout)
+        self.host = host
+        self.thinking_budget = thinking_budget
+        self._capabilities: dict[str, frozenset[str]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def is_thinking_model(self, model: str) -> bool:
+        if model not in self._capabilities:
+            try:
+                caps = self._client.show(model).get("capabilities") or []
+            except Exception:  # an unreachable server surfaces on chat()
+                caps = []
+            self._capabilities[model] = frozenset(caps)
+        return "thinking" in self._capabilities[model]
+
+    def chat(self, *, model: str, stream: bool = False, **kwargs: Any) -> Any:
+        if self.is_thinking_model(model):
+            options = dict(kwargs.get("options") or {})
+            if options.get("num_predict"):
+                options["num_predict"] = int(options["num_predict"]) + self.thinking_budget
+            kwargs["options"] = options
+
+        if stream:
+            return self._stream(model, kwargs)
+
+        response = self._client.chat(model=model, **kwargs)
+        content = strip_reasoning(response["message"].get("content") or "")
+        if not content:
+            raise ChatClientError(
+                f"{model} returned no answer text (its token budget was spent reasoning). "
+                "Use an instruct model or raise the profile's chat_max_tokens."
+            )
+        response["message"]["content"] = content
+        return response
+
+    def _stream(self, model: str, kwargs: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        visible = ReasoningFilter()
+        produced = False
+        for part in self._client.chat(model=model, stream=True, **kwargs):
+            content = visible.feed(part["message"].get("content") or "")
+            produced = produced or bool(content.strip())
+            yield {"message": {"content": content}, "done": bool(part.get("done"))}
+        if not produced:
+            # Same rule as the batch path: a stream that was all reasoning is
+            # a failure, not an empty answer.
+            raise ChatClientError(
+                f"{model} returned no answer text (its token budget was spent reasoning)."
+            )
+
+
+def list_ollama_models(host: str, timeout: float = 5.0) -> list[dict[str, Any]]:
+    """Installed models with their capabilities. Raises if Ollama is unreachable."""
+    import ollama
+
+    client = ollama.Client(host, timeout=timeout)
+    models = []
+    for entry in client.list().get("models", []):
+        name = entry.get("model", "")
+        try:
+            caps = list(client.show(name).get("capabilities") or [])
+        except Exception:
+            caps = []
+        models.append({"name": name, "capabilities": caps, "size": entry.get("size")})
+    return models
+
+
+def pick_ollama_chat_model(installed: list[dict[str, Any]], configured: str | None) -> str | None:
+    """The configured model if installed, else the best installed chat model."""
+    names = {m["name"] for m in installed}
+    chat_capable = [m["name"] for m in installed if "completion" in m["capabilities"]]
+
+    def present(name: str) -> str | None:
+        if name in names:
+            return name
+        if f"{name}:latest" in names:
+            return f"{name}:latest"
+        return None
+
+    if configured and (found := present(configured)):
+        return found
+    for candidate in PREFERRED_OLLAMA_CHAT_MODELS:
+        if found := present(candidate):
+            return found
+    return chat_capable[0] if chat_capable else None
+
+
 def build_chat_client(settings: Settings | None = None, *, timeout: float | None = None) -> Any:
     """The chat client for the configured provider.
 
-    Returns an `ollama.Client` unchanged when the provider is Ollama, so the
-    default path is not merely compatible with the old behaviour - it is the
-    old behaviour.
+    Returns an `OllamaChatClient` - the Ollama client with reasoning-model
+    handling - when the provider is Ollama, so every call site keeps using
+    Ollama's method signatures and return shapes.
 
     `timeout` overrides the provider default. The intent classifier needs it:
     it runs on the hot path with a 12-second budget, and inheriting the
@@ -353,16 +562,14 @@ def build_chat_client(settings: Settings | None = None, *, timeout: float | None
     llm = settings.llm
 
     if llm.provider == "ollama":
-        import ollama
-
-        return ollama.Client(
+        return OllamaChatClient(
             settings.ollama.host,
             timeout=timeout if timeout is not None else settings.ollama.timeout_seconds,
         )
 
     if llm.api_key is None:
         raise ChatClientError(
-            f"LLM_PROVIDER={llm.provider} but LLM_API_KEY is not set. "
+            f"LLM_PROVIDER={llm.provider} but no API key is set (GROQ_API_KEY or LLM_API_KEY). "
             "Set it as an environment variable or a container secret, never in a file."
         )
     if not llm.model:
@@ -390,6 +597,11 @@ def build_embedding_client(settings: Settings | None = None) -> Any:
         import ollama
 
         return ollama.Client(settings.ollama.host, timeout=settings.ollama.timeout_seconds)
+
+    if embeddings.provider == "fastembed":
+        model = embeddings.model or "nomic-ai/nomic-embed-text-v1.5-Q"
+        log.info("Embeddings in-process via fastembed (model %s)", model)
+        return FastEmbedClient(model, cache_dir=embeddings.cache_dir or None)
 
     if not embeddings.model:
         raise EmbeddingClientError(
