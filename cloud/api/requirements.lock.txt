@@ -24,6 +24,10 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   loguru
     #   tqdm
+duckdb==1.5.5
+    # via -r cloud/api/requirements.txt
+faker==40.39.0
+    # via -r cloud/api/requirements.txt
 fastapi==0.141.1
     # via -r cloud/api/requirements.txt
 fastembed==0.8.1
@@ -212,6 +216,7 @@ typing-inspection==0.4.4
     #   pydantic-settings
 tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via
+    #   faker
     #   pandas
     #   psycopg
 urllib3==2.8.0

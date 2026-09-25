@@ -35,7 +35,15 @@ What the launcher does:
 3. Checks the embedding model (`nomic-embed-text`); `--pull` fetches it.
 4. Builds the index if missing or built with another embedding model;
    otherwise re-indexes only changed documents.
-5. Serves UI + API.
+5. Builds the embedded DuckDB analytics database on first run (~18 s) and
+   installs Vanna if missing.
+6. Serves UI + API.
+
+Data questions ("Which five customers have the highest ARR?") are answered
+by Text-to-SQL over that database. Routing uses rules and heuristics
+(`ROUTER_LLM=never`) because model routing costs about 50 s per question on
+a CPU. Set `DATABASE_BACKEND=sqlserver` or `postgresql` in
+`local-enterprise-copilot/.env` to use a real server instead.
 
 Useful switches:
 
@@ -55,8 +63,10 @@ The hosts that run the Docker image (Render, Cloud Run, Oracle, Fly.io) all
 ask for a card at signup or deploy time. Streamlit Community Cloud does not,
 so it is the default free host. `cloud/streamlit/streamlit_app.py` is a second
 web layer over the **same engine**: the same retrieval, permission filters,
-prompts, refusal rules and citation validation. It uses Groq for chat and
-fastembed in-process for embeddings, like the Docker image.
+prompts, refusal rules, SQL guard and citation validation. It uses Groq for
+chat and SQL generation (through Vanna), fastembed in-process for embeddings,
+and a read-only DuckDB file for the company database. There is no database
+account to create.
 
 1. https://share.streamlit.io → sign in with GitHub → **Create app → Deploy a
    public app from GitHub**.
@@ -69,18 +79,29 @@ fastembed in-process for embeddings, like the Docker image.
    GROQ_API_KEY = "gsk_..."
    # optional
    GROQ_MODEL = "qwen/qwen3.8-27b"
+   GROQ_FALLBACK_MODELS = "openai/gpt-oss-20b,openai/gpt-oss-120b"
+   TEXT_TO_SQL_PROVIDER = "vanna"   # or "native"
    ```
 
-4. Deploy. The first start installs dependencies (a few minutes), then
-   downloads the embedding model and builds the index (under a minute).
-   Later visits reuse it until the app restarts.
+4. Deploy. The first start installs dependencies (a few minutes). It then
+   downloads the embedding model, builds the document index and the DuckDB
+   database, and trains Vanna's store (about 1.5 minutes, measured locally at
+   96 s). Later visits reuse all of it until the app restarts. Answers then
+   take about 3-14 s.
 
-What differs from the Docker deployment: the Streamlit chat UI instead of the
-React one; no document upload, retrieval lab or evaluation pages; the app
-sleeps after 12 hours without visitors. Limits: 12 questions per minute per
-visitor session and 60 per minute for the whole app (`RATE_LIMIT_PER_MINUTE`,
-`GLOBAL_RATE_LIMIT_PER_MINUTE`). The key lives in Streamlit's secret store and
-is only read on the server.
+Under each answer, **Data & SQL** shows the executed query and its rows, and
+**Sources** shows the cited passages.
+
+What differs from the Docker deployment:
+- The Streamlit chat UI replaces the React one.
+- There are no document upload, retrieval lab or evaluation pages.
+- The app sleeps after 12 hours without visitors.
+
+Limits are sized to Groq's free tier: about 8k tokens per minute per model,
+about 5k per grounded answer, and 3 models with fallback. That allows 6
+questions per minute per visitor session and 8 per minute for the whole app
+(`RATE_LIMIT_PER_MINUTE`, `GLOBAL_RATE_LIMIT_PER_MINUTE`). The key lives in
+Streamlit's secret store and is only read on the server.
 
 Run it locally the same way:
 

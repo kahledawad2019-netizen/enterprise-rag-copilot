@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -83,7 +84,9 @@ class Tracer:
         self.enabled = self.settings.observability.enable_tracing
         self.spans: list[Span] = []
         self._current_trace_id: str | None = None
-        self._span_stack: list[str] = []
+        # Per thread: a hybrid question gathers documents and SQL in parallel,
+        # and a shared stack would pop the other thread's span.
+        self._local = threading.local()
         self._otel_tracer = None
         self._otel_failed = False
 
@@ -95,6 +98,25 @@ class Tracer:
         self._current_trace_id = trace_id or uuid.uuid4().hex[:16]
         self._span_stack = []
         return self._current_trace_id
+
+    @property
+    def _span_stack(self) -> list[str]:
+        stack = getattr(self._local, "stack", None)
+        if stack is None:
+            stack = self._local.stack = []
+        return stack
+
+    @_span_stack.setter
+    def _span_stack(self, value: list[str]) -> None:
+        self._local.stack = value
+
+    def current_stack(self) -> list[str]:
+        """Snapshot of this thread's open spans, for `adopt` in a worker."""
+        return list(self._span_stack)
+
+    def adopt(self, stack: list[str]) -> None:
+        """Make a worker thread's spans children of the caller's open span."""
+        self._span_stack = list(stack)
 
     @property
     def trace_id(self) -> str:

@@ -31,6 +31,10 @@ KEYRING_SERVICE = "enterprise-copilot"
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b"
+# Each Groq model has its own free-tier rate budget; these take over, in
+# order, when the main model answers 429. Both cite as 【D1】, which
+# Answerer.finish normalises to [D1].
+DEFAULT_GROQ_FALLBACK_MODELS = "openai/gpt-oss-20b,openai/gpt-oss-120b"
 
 
 def resolve_path(value: object) -> object:
@@ -177,6 +181,28 @@ class PostgresSettings(BaseSettings):
         return dsn
 
 
+class DuckDBSettings(BaseSettings):
+    """Embedded analytics database (DATABASE_BACKEND=duckdb).
+
+    A file, not a server: built from sql/postgres + the synthetic generator
+    by scripts/build_duckdb.py (or on first start), then opened read-only.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="DUCKDB_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    path: Path = PROJECT_ROOT / "data" / "warehouse" / "northwind.duckdb"
+    memory_limit: str = "512MB"
+    threads: int = 2
+
+    _resolve = field_validator("path", mode="before")(resolve_path)
+
+
 class OllamaSettings(BaseSettings):
     """Local inference runtime. No cloud provider is ever contacted."""
 
@@ -236,6 +262,21 @@ class LLMSettings(BaseSettings):
     model: str = ""
 
     timeout_seconds: float = 120.0
+
+    # Comma-separated models to try, in order, when the main one is rate
+    # limited (HTTP 429). Blank on Groq means DEFAULT_GROQ_FALLBACK_MODELS;
+    # "none" disables fallback.
+    fallback_models: str = ""
+    groq_fallback_models: str = Field(default="", validation_alias="GROQ_FALLBACK_MODELS")
+
+    @property
+    def fallback_model_list(self) -> list[str]:
+        raw = self.fallback_models or self.groq_fallback_models
+        if raw.strip().lower() == "none":
+            return []
+        if not raw.strip() and self.provider == "groq":
+            raw = DEFAULT_GROQ_FALLBACK_MODELS
+        return [m.strip() for m in raw.split(",") if m.strip()]
 
     @field_validator("api_key", "groq_api_key", mode="before")
     @classmethod
@@ -553,8 +594,12 @@ class Settings(BaseSettings):
     #   always / never   force it.
     # The destructive-intent rules run in every mode.
     router_llm: Literal["auto", "always", "never"] = Field(default="auto", alias="ROUTER_LLM")
+    # Self-correction after the database rejects a guard-approved query: the
+    # error is fed back to the model and the new query is validated again.
+    # A guard refusal is never retried.
+    sql_execution_retries: int = Field(default=2, ge=0, le=5, alias="SQL_EXECUTION_RETRIES")
 
-    database_backend: Literal["sqlserver", "postgresql", "none"] = Field(
+    database_backend: Literal["sqlserver", "postgresql", "duckdb", "none"] = Field(
         default="sqlserver", alias="DATABASE_BACKEND"
     )
 
@@ -573,6 +618,7 @@ class Settings(BaseSettings):
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
+    duckdb: DuckDBSettings = Field(default_factory=DuckDBSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
@@ -605,7 +651,18 @@ class Settings(BaseSettings):
 
     @property
     def sql_dialect(self) -> Literal["tsql", "postgres"]:
-        return "postgres" if self.database_backend == "postgresql" else "tsql"
+        """The dialect the model writes and the guard validates.
+
+        DuckDB deployments use PostgreSQL here on purpose: the prompts,
+        few-shot examples and guard rules are the tested PostgreSQL ones, and
+        the approved statement is transpiled only at execution
+        (`execution_dialect`).
+        """
+        return "postgres" if self.database_backend in ("postgresql", "duckdb") else "tsql"
+
+    @property
+    def execution_dialect(self) -> Literal["tsql", "postgres", "duckdb"]:
+        return "duckdb" if self.database_backend == "duckdb" else self.sql_dialect
 
     @property
     def chat_model(self) -> str:
@@ -650,21 +707,21 @@ class Settings(BaseSettings):
             "reranker": self.profile.reranker_model or "(disabled)",
             "ollama_host": self.ollama.host,
             "database_backend": self.database_backend,
-            "database_endpoint": (
-                "PostgreSQL (secret DSN)"
-                if self.database_backend == "postgresql"
-                else self.database.server
-            ),
-            "database": (
-                "PostgreSQL"
-                if self.database_backend == "postgresql"
-                else self.database.database
-            ),
-            "sql_auth": (
-                "dsn"
-                if self.database_backend == "postgresql"
-                else self.database.auth_mode
-            ),
+            "database_endpoint": {
+                "postgresql": "PostgreSQL (secret DSN)",
+                "duckdb": f"DuckDB file {self.duckdb.path.name} (read-only)",
+                "none": "(disabled)",
+            }.get(self.database_backend, self.database.server),
+            "database": {
+                "postgresql": "PostgreSQL",
+                "duckdb": "DuckDB",
+                "none": "(disabled)",
+            }.get(self.database_backend, self.database.database),
+            "sql_auth": {
+                "postgresql": "dsn",
+                "duckdb": "read-only file",
+                "none": "-",
+            }.get(self.database_backend, self.database.auth_mode),
             "vector_store": f"qdrant:{self.vector_store.mode}",
             "index_version": self.vector_store.index_version,
             "demo_mode": str(self.demo_mode),

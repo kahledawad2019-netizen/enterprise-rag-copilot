@@ -20,6 +20,7 @@ local-enterprise-copilot/**
 !local-enterprise-copilot/scripts/
 local-enterprise-copilot/scripts/**
 !local-enterprise-copilot/scripts/build_index.py
+!local-enterprise-copilot/scripts/build_duckdb.py
 !local-enterprise-copilot/data/
 local-enterprise-copilot/data/**
 !local-enterprise-copilot/data/documents/

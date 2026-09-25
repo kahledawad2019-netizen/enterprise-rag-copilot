@@ -17,8 +17,11 @@ What it does, in order, stopping with a plain explanation if a step fails:
    pulls it with --pull.
 4. Builds the vector index if it is missing or was built with a different
    embedding model; otherwise re-indexes only changed documents.
-5. Builds the UI if it has not been built.
-6. Serves UI + API at http://127.0.0.1:8000.
+5. Builds the embedded DuckDB analytics database (customers, subscriptions,
+   billing, support) if it is missing, so data questions work with no
+   database server.
+6. Builds the UI if it has not been built.
+7. Serves UI + API at http://127.0.0.1:8000.
 
 Every choice can be overridden with the environment variables in
 local-enterprise-copilot/.env.example; values already set in the environment
@@ -50,8 +53,15 @@ LOCAL_DEFAULTS = {
     "EMBEDDING_PROVIDER": "ollama",
     "OLLAMA_EMBEDDING_MODEL": "nomic-embed-text",
     "COPILOT_PROFILE": "lite",
-    # No SQL Server or Postgres is assumed: documents-only until one is set up.
-    "DATABASE_BACKEND": "none",
+    # Embedded DuckDB file: Text-to-SQL with no database server. Set
+    # DATABASE_BACKEND=sqlserver / postgresql in .env to use a real one.
+    "DATABASE_BACKEND": "duckdb",
+    # Route with rules and heuristics, not the model. On a CPU model the two
+    # routing calls cost ~50 s per question; the heuristics route 12 of 14
+    # reference questions correctly, and the refusal rules, SQL guard and
+    # read-only database protect the data either way. ROUTER_LLM=always in
+    # .env restores model routing.
+    "ROUTER_LLM": "never",
     # A local index of its own, so it never collides with a cloud-built one.
     "QDRANT_MODE": "embedded",
     "QDRANT_PATH": "./data/qdrant-local",
@@ -105,6 +115,23 @@ def apply_defaults() -> None:
             os.environ.setdefault(key, value)
         elif key not in os.environ and key not in file_values:
             os.environ[key] = value
+
+
+def _ensure_python_packages(required: dict[str, str]) -> None:
+    """Install packages added after this virtualenv was first created."""
+    import importlib.util
+
+    missing = [spec for module, spec in required.items() if importlib.util.find_spec(module) is None]
+    if not missing:
+        return
+    step("Installing new dependencies: " + ", ".join(missing))
+    uv = shutil.which("uv")
+    command = (
+        [uv, "pip", "install", "--python", sys.executable, *missing]
+        if uv
+        else [sys.executable, "-m", "pip", "install", *missing]
+    )
+    subprocess.run(command, check=True)
 
 
 def main() -> None:
@@ -186,7 +213,31 @@ def main() -> None:
     pipeline.store.close()
     del pipeline
 
-    # 5. UI
+    # 5. Analytics database
+    if settings.database_backend == "duckdb":
+        step("Checking the analytics database")
+        _ensure_python_packages({"duckdb": "duckdb>=1.1,<2"})
+        from enterprise_copilot.database.duckdb_store import (
+            build_database,
+            database_ready,
+        )
+
+        if database_ready(settings):
+            print(f"    {settings.duckdb.path.name} (up to date)")
+        else:
+            counts = build_database(settings)
+            print(
+                f"    built {settings.duckdb.path.name}: {counts.get('customers', 0)} customers, "
+                f"{counts.get('invoices', 0)} invoices, {counts.get('tickets', 0)} tickets"
+            )
+    else:
+        print(f"    database: {settings.database_backend}")
+    if settings.sql_enabled and settings.text_to_sql_provider == "vanna":
+        # Vanna generates the SQL (the guard still validates it). Without it
+        # the native generator is used, which is logged, not fatal.
+        _ensure_python_packages({"vanna": "vanna[chromadb,ollama]==2.0.2"})
+
+    # 6. UI
     if not (UI / "dist" / "index.html").exists():
         npm = shutil.which("npm") or shutil.which("npm.cmd")
         if npm is None:
@@ -196,7 +247,7 @@ def main() -> None:
             subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=UI, check=True)
             subprocess.run([npm, "run", "build:open"], cwd=UI, check=True)
 
-    # 6. Serve
+    # 7. Serve
     url = f"http://{args.host}:{args.port}"
     step(f"Starting on {url}  (LOCAL — OLLAMA · {chat_model})   Ctrl+C to stop")
     if not args.no_browser:

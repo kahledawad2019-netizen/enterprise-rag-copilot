@@ -55,6 +55,10 @@ class ChatClientError(RuntimeError):
     """Chat generation failed, with enough context to act on."""
 
 
+class RateLimitedError(ChatClientError):
+    """The provider answered 429. Another model may still have quota."""
+
+
 class EmbeddingClientError(RuntimeError):
     """Embedding failed, with enough context to act on."""
 
@@ -72,9 +76,24 @@ class OpenAICompatChatClient:
     constraint and a second retry policy for no gain.
     """
 
-    def __init__(self, base_url: str, api_key: str, timeout: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        *,
+        fallback_models: list[str] | tuple[str, ...] = (),
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # Tried in order when a model is rate limited. On Groq's free tier
+        # every model has its own tokens-per-minute budget (8k at the time of
+        # writing), and one grounded SQL answer can use most of it, so a
+        # second model roughly doubles how many visitors the demo can serve.
+        self.fallback_models = tuple(fallback_models)
+        # The model that actually answered the most recent call, which after
+        # a 429 is not the one that was asked for. Recorded on the Answer.
+        self.last_model: str | None = None
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -101,9 +120,40 @@ class OpenAICompatChatClient:
             # the model at all.
             payload["response_format"] = {"type": "json_object"}
 
+        models = [model, *(m for m in self.fallback_models if m != model)]
         if stream:
-            return self._stream(payload)
-        return self._once(payload)
+            return self._stream_with_fallback(payload, models)
+        for index, name in enumerate(models):
+            try:
+                response = self._once({**payload, "model": name})
+                self.last_model = name
+                return response
+            except RateLimitedError:
+                if index == len(models) - 1:
+                    raise
+                log.warning("%s is rate limited; retrying with %s", name, models[index + 1])
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _stream_with_fallback(
+        self, payload: dict[str, Any], models: list[str]
+    ) -> Iterator[dict[str, Any]]:
+        """Fall back only before the first chunk: switching model mid-answer
+        would splice two different answers together."""
+        for index, name in enumerate(models):
+            parts = self._stream({**payload, "model": name})
+            try:
+                first = next(parts)
+            except StopIteration:
+                return
+            except RateLimitedError:
+                if index == len(models) - 1:
+                    raise
+                log.warning("%s is rate limited; retrying with %s", name, models[index + 1])
+                continue
+            self.last_model = name
+            yield first
+            yield from parts
+            return
 
     def _once(self, payload: dict[str, Any]) -> dict[str, Any]:
         import requests
@@ -121,7 +171,7 @@ class OpenAICompatChatClient:
             ) from exc
 
         if response.status_code != 200:
-            raise ChatClientError(_http_error(self.base_url, response))
+            _raise_http(self.base_url, response)
 
         body = response.json()
         return _to_ollama_shape(body)
@@ -143,7 +193,7 @@ class OpenAICompatChatClient:
             ) from exc
 
         if response.status_code != 200:
-            raise ChatClientError(_http_error(self.base_url, response))
+            _raise_http(self.base_url, response)
 
         visible = ReasoningFilter()
         finished = False
@@ -217,6 +267,13 @@ def _to_ollama_shape(body: dict[str, Any]) -> dict[str, Any]:
         "eval_count": usage.get("completion_tokens"),
         "model": body.get("model", ""),
     }
+
+
+def _raise_http(base_url: str, response: Any) -> None:
+    message = _http_error(base_url, response)
+    if response.status_code == 429:
+        raise RateLimitedError(message)
+    raise ChatClientError(message)
 
 
 def _http_error(base_url: str, response: Any) -> str:
@@ -331,9 +388,17 @@ class FastEmbedClient:
         self.model = model
         self._model = TextEmbedding(model_name=model, cache_dir=cache_dir)
 
+    # One text per ONNX run. ONNX Runtime's CPU arena keeps its peak
+    # allocation for the life of the process, and a padded batch's peak grows
+    # with batch size: embedding the 25-table schema catalog measured +258 MB
+    # RSS at batch 32 and +17 MB at batch 1 - the difference between fitting
+    # a 512 MB free container and not. CPU inference gains little from
+    # batching, so throughput barely changes.
+    batch_size = 1
+
     def embed(self, *, model: str, input: list[str], **_: Any) -> dict[str, Any]:
         try:
-            vectors = [v.tolist() for v in self._model.embed(input)]
+            vectors = [v.tolist() for v in self._model.embed(input, batch_size=self.batch_size)]
         except Exception as exc:
             raise EmbeddingClientError(
                 f"fastembed failed for {self.model}: {type(exc).__name__}: {exc}"
@@ -585,6 +650,7 @@ def build_chat_client(settings: Settings | None = None, *, timeout: float | None
         base_url=llm.base_url,
         api_key=llm.api_key.get_secret_value(),
         timeout=timeout if timeout is not None else llm.timeout_seconds,
+        fallback_models=llm.fallback_model_list,
     )
 
 

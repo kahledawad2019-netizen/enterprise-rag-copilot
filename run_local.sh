@@ -22,9 +22,9 @@ else
   fi
   if [ -x "$APP/.venv/bin/python" ]; then PY="$APP/.venv/bin/python"; else PY="$APP/.venv/Scripts/python.exe"; fi
   if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$PY" -e "$APP[dev]" "uvicorn[standard]"
+    uv pip install --python "$PY" -e "$APP[dev,vanna]" "uvicorn[standard]"
   else
-    "$PY" -m pip install -e "$APP[dev]" "uvicorn[standard]"
+    "$PY" -m pip install -e "$APP[dev,vanna]" "uvicorn[standard]"
   fi
 fi
 

@@ -155,7 +155,15 @@ class SchemaRetriever:
 
     @property
     def cache_path(self) -> Path:
-        return self.settings.manifests_dir / f"schema_catalog_{self.settings.sql_dialect}.json"
+        # Keyed by backend, not dialect: DuckDB writes PostgreSQL SQL but its
+        # catalog (types, relationships source) is its own.
+        return self.settings.manifests_dir / f"schema_catalog_{self._catalog_key}.json"
+
+    @property
+    def _catalog_key(self) -> str:
+        if self.settings.database_backend == "duckdb":
+            return "duckdb"
+        return self.settings.sql_dialect
 
     # -- catalog -----------------------------------------------------------
     def load_catalog(self, *, refresh: bool = False) -> list[TableInfo]:
@@ -180,7 +188,8 @@ class SchemaRetriever:
         return self._catalog
 
     def _read_from_database(self) -> tuple[list[TableInfo], list[str]]:
-        marker = "%s" if self.settings.database_backend == "postgresql" else "?"
+        backend = self.settings.database_backend
+        marker = "%s" if backend == "postgresql" else "?"
         placeholders = ", ".join(marker for _ in VISIBLE_SCHEMAS)
         tables: dict[str, TableInfo] = {}
 
@@ -197,8 +206,8 @@ class SchemaRetriever:
                 WHERE t.TABLE_SCHEMA IN ({placeholders})
                 ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
                 """
-            if self.settings.database_backend == "postgresql":
-                cursor.execute(catalog_sql, VISIBLE_SCHEMAS)
+            if backend in ("postgresql", "duckdb"):
+                cursor.execute(catalog_sql, list(VISIBLE_SCHEMAS))
             else:
                 cursor.execute(catalog_sql, *VISIBLE_SCHEMAS)
             for row in cursor.fetchall():
@@ -223,7 +232,14 @@ class SchemaRetriever:
                     }
                 )
 
-            if self.settings.database_backend == "postgresql":
+            if backend == "duckdb":
+                # DuckDB cannot declare cross-schema foreign keys; the builder
+                # records the PostgreSQL ones in ai.schema_relationships.
+                cursor.execute(
+                    "SELECT table_schema, table_name, column_name, "
+                    "ref_schema, ref_table, ref_column FROM ai.schema_relationships"
+                )
+            elif backend == "postgresql":
                 cursor.execute(
                     """
                     SELECT tc.table_schema, tc.table_name, kcu.column_name,
@@ -400,7 +416,7 @@ class SchemaRetriever:
                 """
                 .format(
                     current_literal=(
-                        "TRUE" if self.settings.database_backend == "postgresql" else "1"
+                        "TRUE" if self.settings.database_backend in ("postgresql", "duckdb") else "1"
                     )
                 )
             )
@@ -444,7 +460,7 @@ class SchemaRetriever:
                 """
                 .format(
                     active_literal=(
-                        "TRUE" if self.settings.database_backend == "postgresql" else "1"
+                        "TRUE" if self.settings.database_backend in ("postgresql", "duckdb") else "1"
                     )
                 )
             )

@@ -51,7 +51,10 @@ FORCED = {
     "LLM_PROVIDER": "groq",
     "EMBEDDING_PROVIDER": "fastembed",
     "EMBEDDING_MODEL": "nomic-ai/nomic-embed-text-v1.5-Q",
-    "DATABASE_BACKEND": "none",
+    # Embedded, read-only analytics database built on first start from
+    # sql/postgres + the synthetic generator: Text-to-SQL with no DB account.
+    "DATABASE_BACKEND": "duckdb",
+    "DUCKDB_PATH": str(STATE_DIR / "northwind.duckdb"),
     "QDRANT_MODE": "embedded",
     "QDRANT_PATH": str(STATE_DIR / "qdrant"),
     "QDRANT_INDEX_VERSION": "streamlit-nomic-v1",
@@ -60,6 +63,7 @@ DEFAULTS = {
     "GROQ_MODEL": "qwen/qwen3.8-27b",
     "COPILOT_PROFILE": "lite",
     "COPILOT_DEMO_MODE": "true",
+    "TEXT_TO_SQL_PROVIDER": "vanna",
     "EMBEDDING_CACHE_DIR": str(STATE_DIR / "models"),
     "OBS_LOG_FORMAT": "console",
 }
@@ -78,7 +82,7 @@ def configure_environment() -> None:
     for key, value in DEFAULTS.items():
         os.environ.setdefault(key, _secret(key) or value)
     # Secrets override the defaults above; the key is required.
-    for key in ("GROQ_API_KEY", "GROQ_MODEL"):
+    for key in ("GROQ_API_KEY", "GROQ_MODEL", "GROQ_FALLBACK_MODELS", "TEXT_TO_SQL_PROVIDER"):
         value = _secret(key)
         if value:
             os.environ[key] = value
@@ -88,8 +92,12 @@ configure_environment()
 
 # Questions per visitor session and for the whole app, per minute. The global
 # cap protects the shared Groq free-tier quota from one busy visitor or bot.
-SESSION_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", "12"))
-GLOBAL_LIMIT_PER_MINUTE = int(os.environ.get("GLOBAL_RATE_LIMIT_PER_MINUTE", "60"))
+# Sized from measurement: a grounded answer uses ~5k Groq tokens (routing,
+# safety screen, SQL, answer) and the free tier gives each model 8k tokens a
+# minute; with the two fallback models that is roughly 4-5 answers a minute.
+SESSION_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", "6"))
+GLOBAL_LIMIT_PER_MINUTE = int(os.environ.get("GLOBAL_RATE_LIMIT_PER_MINUTE", "8"))
+MAX_TABLE_ROWS = 50
 MAX_QUESTION_CHARS = 2000
 
 # Same personas as the API (cloud/api/main.py PERSONAS): switching persona
@@ -139,10 +147,11 @@ PERSONAS: dict[str, dict] = {
 
 EXAMPLE_QUESTIONS = [
     "What is the refund policy for annual plans?",
-    "What is the maximum discount a sales rep can approve?",
+    "Which five customers have the highest ARR?",
+    "Show customers with more than three SLA breaches and summarise the SLA policy.",
     "What happened in INC-2025-0042 and what was the root cause?",
-    "How quickly must a P1 incident receive a first response?",
-    "How is the customer health score calculated?",
+    "How many active customers do we have per region?",
+    "What is the maximum discount a sales rep can approve?",
     "Delete all customers",
 ]
 
@@ -183,7 +192,23 @@ def load_copilot():
     finally:
         pipeline.store.close()
 
-    return Copilot(settings)
+    if settings.database_backend == "duckdb":
+        from enterprise_copilot.database.duckdb_store import ensure_database
+
+        ensure_database(settings)
+
+    copilot = Copilot(settings)
+    # Train Vanna's store now rather than on the first visitor's question
+    # (it embeds the schema, glossary and golden SQL once: ~30-60 s).
+    provider = copilot.sql_provider
+    if provider is not None and hasattr(provider, "ensure_trained"):
+        try:
+            provider.ensure_trained()
+        except Exception:
+            import logging
+
+            logging.getLogger("copilot.streamlit").exception("Vanna warm-up failed")
+    return copilot
 
 
 @st.cache_resource
@@ -216,6 +241,20 @@ def allow_request() -> str | None:
         window.append(now)
     session.append(now)
     return None
+
+
+def data_view(sql_result, trace) -> dict:
+    """What the page shows under "Data & SQL". Rows are capped for the page."""
+    if sql_result is not None:
+        return {
+            "sql": sql_result.executed_sql,
+            "rows": sql_result.rows[:MAX_TABLE_ROWS],
+            "row_count": sql_result.row_count,
+            "repairs": trace.sql_repairs if trace else 0,
+        }
+    if trace is not None and trace.generated_sql:
+        return {"sql": trace.generated_sql, "rows": [], "row_count": None, "repairs": 0}
+    return {}
 
 
 def public_errors(errors: list[str]) -> list[str]:
@@ -292,11 +331,30 @@ def md(text: str) -> str:
     return text.replace("$", "\\$")
 
 
+def render_data(data: dict) -> None:
+    """The executed SQL and its rows: what the numbers in the answer came from."""
+    if not data or not data.get("sql"):
+        return
+    label = f"Data & SQL ({data['row_count']} rows)" if data.get("row_count") is not None else "SQL"
+    with st.expander(label, expanded=False):
+        st.code(data["sql"], language="sql")
+        if data.get("rows"):
+            st.dataframe(data["rows"], use_container_width=True, hide_index=True)
+            if data["row_count"] > len(data["rows"]):
+                st.caption(f"Showing the first {len(data['rows'])} rows.")
+        if data.get("repairs"):
+            st.caption(
+                f"The database rejected the first draft; the query was corrected "
+                f"{data['repairs']} time(s) and re-validated by the guard."
+            )
+
+
 def render_message(message: dict) -> None:
     with st.chat_message(message["role"]):
         st.markdown(md(message["content"]))
         if message["role"] == "assistant":
             render_details(message.get("details", {}))
+            render_data(message.get("data", {}))
             render_sources(message.get("sources", []), set(message.get("cited", [])))
 
 
@@ -312,7 +370,14 @@ def answer(question: str, persona_key: str) -> dict:
     )
     copilot = load_copilot()
 
-    result: dict = {"role": "assistant", "content": "", "sources": [], "cited": [], "details": {}}
+    result: dict = {
+        "role": "assistant",
+        "content": "",
+        "sources": [],
+        "cited": [],
+        "details": {},
+        "data": {},
+    }
     started = time.perf_counter()
     placeholder = st.empty()
     parts: list[str] = []
@@ -334,7 +399,8 @@ def answer(question: str, persona_key: str) -> dict:
                 trace = payload.trace
                 evidence = payload.package.all_evidence if payload.package else []
                 result["sources"] = source_rows(evidence)
-                status.update(label=f"Found {len(evidence)} passages · writing the answer…")
+                result["data"] = data_view(payload.sql_result, trace)
+                status.update(label=f"Found {len(evidence)} sources · writing the answer…")
             elif kind == "token":
                 parts.append(payload)
                 placeholder.markdown(md("".join(parts).replace("【", "[").replace("】", "]")) + "▌")
@@ -357,6 +423,8 @@ def answer(question: str, persona_key: str) -> dict:
         result["content"] = final.text or "".join(parts)
         result["cited"] = sorted({c.evidence_id for c in final.citations if c.is_valid})
         warnings = public_errors(trace.errors if trace else [])
+        if trace and trace.sql_blocked_reason:
+            warnings.insert(0, f"The database query was blocked by the safety guard: {trace.sql_blocked_reason}")
         result["details"] = {
             "status": final.status.value,
             "grounded": final.is_grounded,
@@ -370,6 +438,7 @@ def answer(question: str, persona_key: str) -> dict:
     status.update(label="Done", state="complete")
     placeholder.markdown(md(result["content"]))
     render_details(result["details"])
+    render_data(result.get("data", {}))
     render_sources(result["sources"], set(result["cited"]))
     return result
 
@@ -389,7 +458,7 @@ def main() -> None:
 
     with st.sidebar:
         st.title("Northwind Copilot")
-        st.caption("☁️ CLOUD — GROQ · answers cite company documents")
+        st.caption("☁️ CLOUD — GROQ · documents + database, every answer cited")
 
         persona_key = st.selectbox(
             "Acting as",
@@ -414,7 +483,8 @@ def main() -> None:
             st.session_state["messages"] = []
         st.caption(
             f"Model `{os.environ.get('GROQ_MODEL')}` on Groq · embeddings "
-            "nomic-embed-text v1.5 (in-process) · hybrid dense + BM25 retrieval. "
+            "nomic-embed-text v1.5 (in-process) · hybrid dense + BM25 retrieval · "
+            "Text-to-SQL by Vanna over a read-only DuckDB database. "
             "Synthetic demo data (Northwind Cloud)."
         )
 
@@ -422,10 +492,11 @@ def main() -> None:
 
     messages: list[dict] = st.session_state.setdefault("messages", [])
     if not messages:
-        st.markdown("### Ask about Northwind's policies, incidents and metrics")
+        st.markdown("### Ask about Northwind's policies, incidents, customers and revenue")
         st.caption(
-            "Every answer is grounded in retrieved passages and cites them as [D1], [D2]… "
-            "Questions outside the documents are declined rather than guessed."
+            "Policy questions are answered from documents [D1]; figures come from a "
+            "read-only query of the company database [S1], shown under *Data & SQL*. "
+            "Questions the sources cannot answer are declined rather than guessed."
         )
     for message in messages:
         render_message(message)

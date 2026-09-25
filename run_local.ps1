@@ -14,11 +14,11 @@ if (-not (Test-Path $python)) {
     Write-Host "==> Creating the virtualenv (first run only)"
     if (Get-Command uv -ErrorAction SilentlyContinue) {
         uv venv --python 3.12 (Join-Path $app ".venv")
-        uv pip install --python $python -e "$app[dev]" "uvicorn[standard]"
+        uv pip install --python $python -e "$app[dev,vanna]" "uvicorn[standard]"
     } else {
         py -3.12 -m venv (Join-Path $app ".venv")
         & $python -m pip install --upgrade pip
-        & $python -m pip install -e "$app[dev]" "uvicorn[standard]"
+        & $python -m pip install -e "$app[dev,vanna]" "uvicorn[standard]"
     }
 }
 

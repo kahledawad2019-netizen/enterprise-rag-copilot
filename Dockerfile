@@ -55,7 +55,11 @@ ENV PYTHONUNBUFFERED=1 \
     EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-Q \
     EMBEDDING_CACHE_DIR=/app/models \
     COPILOT_PROFILE=lite \
-    DATABASE_BACKEND=none \
+    DATABASE_BACKEND=duckdb \
+    DUCKDB_PATH=/app/local-enterprise-copilot/data/warehouse/northwind.duckdb \
+    # The image ships the native SQL generator: Vanna's Chroma store adds
+    # ~400 MB and a training pass on first use. The Streamlit app uses Vanna.
+    TEXT_TO_SQL_PROVIDER=native \
     QDRANT_MODE=embedded \
     QDRANT_PATH=/app/local-enterprise-copilot/data/qdrant \
     QDRANT_INDEX_VERSION=cloud-nomic-v1 \
@@ -75,6 +79,8 @@ WORKDIR /app
 
 COPY --chown=copilot:copilot local-enterprise-copilot/src/ local-enterprise-copilot/src/
 COPY --chown=copilot:copilot local-enterprise-copilot/scripts/build_index.py local-enterprise-copilot/scripts/build_index.py
+COPY --chown=copilot:copilot local-enterprise-copilot/scripts/build_duckdb.py local-enterprise-copilot/scripts/build_duckdb.py
+COPY --chown=copilot:copilot local-enterprise-copilot/sql/postgres/ local-enterprise-copilot/sql/postgres/
 COPY --chown=copilot:copilot local-enterprise-copilot/data/documents/ local-enterprise-copilot/data/documents/
 COPY --chown=copilot:copilot local-enterprise-copilot/evals/baselines/ local-enterprise-copilot/evals/baselines/
 COPY --chown=copilot:copilot cloud/api/ cloud/api/
@@ -86,13 +92,16 @@ RUN mkdir -p /app/models \
              /app/local-enterprise-copilot/data/traces \
              /app/local-enterprise-copilot/data/manifests \
              /app/local-enterprise-copilot/data/generated \
+             /app/local-enterprise-copilot/data/warehouse \
  && chown -R copilot:copilot /app/models /app/local-enterprise-copilot/data
 
 USER copilot
 
-# Download the embedding model and build the index once, at build time.
+# Download the embedding model, build the index and the read-only analytics
+# database once, at build time.
 RUN python local-enterprise-copilot/scripts/build_index.py --rebuild \
- && python local-enterprise-copilot/scripts/build_index.py --validate
+ && python local-enterprise-copilot/scripts/build_index.py --validate \
+ && python local-enterprise-copilot/scripts/build_duckdb.py --rebuild
 
 WORKDIR /app/cloud/api
 EXPOSE 8000

@@ -49,6 +49,46 @@ POSTGRES_BOOLEAN_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 
+def read_reference_data(conn: Any) -> dict[str, list[dict[str, Any]]]:
+    """Read the reference rows the generator needs (created by script 007)."""
+    cursor = conn.cursor()
+
+    def rows(query: str) -> list[dict[str, Any]]:
+        cursor.execute(query)
+        columns = [c[0] for c in cursor.description]
+        return [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
+
+    reference = {
+        "tenants": rows(
+            "SELECT tenant_id, tenant_code, tenant_name, region, "
+            "default_currency, time_zone FROM core.tenants ORDER BY tenant_id"
+        ),
+        "products": rows(
+            "SELECT product_id, product_code, product_name, product_family "
+            "FROM core.products ORDER BY product_id"
+        ),
+        "plans": rows(
+            "SELECT plan_id, product_id, plan_code, plan_name, tier, "
+            "billing_interval, list_price_monthly, seats_included "
+            "FROM core.plans ORDER BY plan_id"
+        ),
+        "sla_policies": rows(
+            "SELECT sla_policy_id, policy_code, plan_tier, priority, "
+            "first_response_minutes, resolution_minutes, version, "
+            "effective_from, effective_to FROM support.sla_policies "
+            "ORDER BY effective_from DESC, sla_policy_id"
+        ),
+    }
+
+    missing = [name for name, values in reference.items() if not values]
+    if missing:
+        raise RuntimeError(
+            f"Reference data missing: {', '.join(missing)}. "
+            "Run: .venv\\Scripts\\python scripts\\setup_database.py --only 007"
+        )
+    return reference
+
+
 class SyntheticLoader:
     def __init__(self, connection: Any, *, dialect: str = "tsql") -> None:
         self.conn = connection
@@ -73,6 +113,9 @@ class SyntheticLoader:
 
     def _insert_many(self, table: str, columns: list[str], rows: list[tuple]) -> None:
         if not rows:
+            return
+        if self.dialect == "duckdb":
+            self._insert_duckdb(table, columns, rows)
             return
         marker = "%s" if self.dialect == "postgres" else "?"
         if self.dialect == "postgres":
@@ -100,6 +143,29 @@ class SyntheticLoader:
             return
         sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
         self.cursor.executemany(sql, rows)
+
+    def _insert_duckdb(self, table: str, columns: list[str], rows: list[tuple]) -> None:
+        """Bulk insert through a DataFrame.
+
+        DuckDB's executemany is row-at-a-time; the usage table alone is
+        ~100k rows. Registering a frame and inserting from it is one
+        vectorised statement. Columns are named explicitly so the sequence
+        defaults still assign the keys.
+        """
+        import pandas as pd
+
+        boolean_columns = POSTGRES_BOOLEAN_COLUMNS.get(table, frozenset())
+        frame = pd.DataFrame.from_records(rows, columns=columns)
+        for column in boolean_columns & set(columns):
+            frame[column] = frame[column].map(lambda v: None if v is None else bool(v))
+        self.conn.register("_loader_rows", frame)
+        try:
+            column_list = ", ".join(columns)
+            self.conn.execute(
+                f"INSERT INTO {table} ({column_list}) SELECT {column_list} FROM _loader_rows"
+            )
+        finally:
+            self.conn.unregister("_loader_rows")
 
     def _fetch_identity_map(self, table: str, key_column: str, id_column: str) -> dict[str, int]:
         self.cursor.execute(f"SELECT {key_column}, {id_column} FROM {table}")

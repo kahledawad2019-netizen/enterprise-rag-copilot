@@ -1,22 +1,25 @@
 # RAG architecture
 
-How a question becomes a cited answer in this repository, what runs where in
-the two deployment modes, and what is known to be weak.
+How a question becomes a cited answer in this repository - from documents
+(vector RAG), from the company database (Text-to-SQL) or from both - what runs
+where in the two deployment modes, and what is known to be weak.
 
 ## At a glance
 
 | | Local (private) | Cloud (public demo) |
 |---|---|---|
-| Entry point | `run_local.py` → `cloud/api/server.py` | `Dockerfile` → `cloud/api/server.py` on Render |
-| Frontend | React 19 + Vite (`cloud/ui`), served by the same process | same build |
+| Entry point | `run_local.py` → `cloud/api/server.py` | `cloud/streamlit/streamlit_app.py` on Streamlit Community Cloud (free, no card); `Dockerfile` for any Docker host |
+| Frontend | React 19 + Vite (`cloud/ui`), served by the same process | Streamlit chat (same engine); the Docker image serves the React build |
 | Backend | FastAPI (`cloud/api/main.py`) wrapping `enterprise_copilot.Copilot` | same |
 | Chat model | Ollama, auto-picked (default `qwen3:4b-instruct-2507-q4_K_M`) | Groq `qwen/qwen3.8-27b` |
 | Embeddings | Ollama `nomic-embed-text` (768-d) | fastembed ONNX `nomic-ai/nomic-embed-text-v1.5-Q` (768-d), in-process |
 | Vector DB | embedded Qdrant, `local-enterprise-copilot/data/qdrant-local` | embedded Qdrant, built into the image |
 | Sparse index | BM25 (`rank-bm25`), cached pickle next to the manifest | same |
-| SQL | disabled (`DATABASE_BACKEND=none`) unless configured | disabled |
+| Structured data | DuckDB file, read-only, built on first run (`DATABASE_BACKEND=duckdb`) | same, built on first start (Streamlit) or at image build (Docker) |
+| Text-to-SQL | Vanna (Chroma store) on Ollama; native generator if Vanna is absent | Vanna on Groq (Streamlit); native generator (Docker image) |
+| Routing | rules + heuristics (`ROUTER_LLM=never`, saves ~50 s on CPU) | rules + LLM intent screen + LLM route classification |
 | Auth | none (localhost, single user) | public demo + per-IP rate limit |
-| Leaves the machine | nothing | prompts (question + retrieved passages) go to Groq |
+| Leaves the machine | nothing | prompts (question, retrieved passages, schema and query results) go to Groq |
 
 One pipeline serves both modes. Only the two provider clients differ; there
 is no second copy of retrieval, prompting or citation logic.
@@ -36,10 +39,32 @@ Qdrant (cosine) + BM25 cache     manifest records model, dimension, version
 question
   │ routing/router.py          1. deterministic refusal rules (destructive /
   │                               exfiltration intent) - always
-  │                            2. semantic intent screen + LLM route
+  │                            2. DIRECT rules: greeting / thanks / "what can
+  │                               you do" -> template reply, nothing retrieved
+  │                            3. semantic intent screen + LLM route
   │                               classification - only when ROUTER_LLM
   │                               decides it is worth it (see below)
-  │                            3. heuristics fallback
+  │                            4. heuristics fallback
+  │   routes: document_rag | text_to_sql | multi_source (HYBRID) | clarify |
+  │           refuse | direct
+  │
+  ├─ text_to_sql / multi_source ──────────────────────────────────────────┐
+  │ text_to_sql/schema_retriever.py  relevant tables, join paths, glossary │
+  │                                  definitions, golden SQL examples      │
+  │ text_to_sql/vanna_provider.py    Vanna (Chroma) or native.py generates │
+  │                                  PostgreSQL through the same chat      │
+  │                                  client (Ollama or Groq)               │
+  │ security/sql_guard.py            AST check: one SELECT, allowed        │
+  │                                  schemas, no blocked columns; injects  │
+  │                                  the tenant predicate and a row limit  │
+  │ database/read_only_runner.py     audit, timeout, row cap, redaction;   │
+  │                                  DuckDB: transpile to DuckDB, read-only│
+  │                                  file handle                           │
+  │ orchestrator (self-correction)   DB error -> model -> new SQL -> guard │
+  │                                  again (max SQL_EXECUTION_RETRIES=2)   │
+  │   -> evidence S1 (rows + the SQL that produced them)                   │
+  └────────────────────────────────────────────────────────────────────────┘
+  │   multi_source runs the document and SQL halves in parallel
   │ retrieval/hybrid.py        dense (Qdrant) + sparse (BM25), both
   │                            permission- and version-filtered BEFORE ranking
   │ retrieval/fusion.py        RRF (k=60) → dedupe (full-text hash) →
@@ -72,6 +97,14 @@ so every call site is provider-agnostic:
   `GROQ_MODEL`. Server-side only; mid-stream error events and truncated streams
   raise instead of ending an answer silently.
 - `LLM_PROVIDER=openai` → any other OpenAI-compatible endpoint.
+- **Rate limits.** Groq's free tier gives each model about 8k tokens per
+  minute, and a grounded SQL answer uses about 5k (routing, intent screen,
+  SQL, answer: measured). On HTTP 429 the client retries the same request on
+  `GROQ_FALLBACK_MODELS` (default `openai/gpt-oss-20b,openai/gpt-oss-120b`),
+  each with its own budget. A stream only falls back before its first token.
+- **Vanna** uses this same client (`_ChatBridge` in `vanna_provider.py`)
+  instead of Vanna's vendor-specific LLM classes. One provider switch covers
+  answers, routing and SQL generation.
 
 `build_embedding_client` does the same for `ollama`, `fastembed`,
 `cloudflare` and `openai`.
@@ -88,6 +121,16 @@ documents-only deployment every route ends in document search anyway. So
 `ROUTER_LLM=auto` (default) uses the model only when SQL is enabled or the
 model is hosted and fast. The deterministic refusal rules run in every mode.
 
+### Structured data (`DATABASE_BACKEND=duckdb`)
+
+The default in both shipped modes. It is one file, built from the same
+PostgreSQL scripts as Neon plus the deterministic synthetic generator
+(`database/duckdb_store.py`, `docs/DATABASE_SCHEMA.md`). The model writes
+PostgreSQL, the guard validates PostgreSQL, and only the approved statement is
+transpiled to DuckDB by sqlglot and run on a **read-only** connection with a
+timeout. SQL Server and PostgreSQL/Neon remain supported with
+`DATABASE_BACKEND=sqlserver|postgresql`.
+
 ### Documents-only mode (`DATABASE_BACKEND=none`)
 
 Text-to-SQL needs SQL Server or PostgreSQL. Without one, data questions still
@@ -103,7 +146,7 @@ as "disabled", not failed.
 | `GET /api/health` | readiness: copilot, index chunk count, database, chat model, data locality |
 | `GET /api/meta` | UI bootstrap: mode (local/cloud), provider, model, personas, example questions |
 | `POST /api/ask` | batch answer |
-| `POST /api/ask/stream` | SSE: `sources` → `token`* → `done` (or `error`) |
+| `POST /api/ask/stream` | SSE: `sources` → `token`* → `done` (or `error`); `done` carries `sql` (generated/executed SQL, guard verdict), `columns`, `rows` and the route - the developer metadata |
 | `POST /api/retrieve` | strategy comparison (Retrieval lab) |
 | `GET /api/documents` | corpus list, filtered server-side by persona |
 | `POST /api/documents/upload` | validated upload + incremental indexing |
@@ -168,6 +211,13 @@ Re-run: `cd local-enterprise-copilot && .venv/Scripts/python scripts/evaluate_re
   not budgeted against the model's window (Codex audit #14).
 - BM25 cache staleness under a shared server-mode Qdrant (audit #11) - not
   reachable in the shipped single-process modes, which reload after uploads.
+
+- Groq free tier: about 4-5 grounded answers per minute across the three
+  fallback models. The Streamlit app limits each session to 6 questions per
+  minute and the whole app to 8.
+- DuckDB has no row-level security. Tenant isolation rests on the guard's
+  injected predicate (tested) plus a read-only handle; PostgreSQL adds RLS as
+  a second layer.
 
 **Optional**
 - Conversations are single-turn at the API (the UI keeps history for display);

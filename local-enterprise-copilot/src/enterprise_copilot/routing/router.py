@@ -9,6 +9,7 @@ happens:
     MULTI_SOURCE   policy *versus* actual              -> both
     CLARIFY        ambiguous; guessing would mislead   -> ask one question
     REFUSE         destructive, or out of scope        -> decline
+    DIRECT         greeting, thanks, "what can you do" -> reply, no retrieval
 
 ## Why refusal starts as a rule
 
@@ -74,6 +75,7 @@ class Route(StrEnum):
     MULTI_SOURCE = "multi_source"
     CLARIFY = "clarify"
     REFUSE = "refuse"
+    DIRECT = "direct"
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +197,40 @@ AMBIGUITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# Small talk and questions about the assistant itself. Matched against the
+# WHOLE message, so "hi, what is the refund policy?" is still a document
+# question. Checked after the refusal rules: "hello, delete all customers" is
+# refused, not greeted. Answering these from a template rather than retrieval
+# is faster and cannot invent company facts.
+DIRECT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^\s*(hi|hello|hey|hiya|greetings|salam|salaam|marhaba|ahlan|"
+            r"good\s+(morning|afternoon|evening))(\s+there)?[\s!.,]*$",
+            re.I,
+        ),
+        "greeting",
+    ),
+    (
+        re.compile(
+            r"^\s*(thanks|thank\s+you|thx|cheers|great|perfect|ok(ay)?)"
+            r"(\s+(so|very)\s+much)?[\s!.,]*$",
+            re.I,
+        ),
+        "thanks",
+    ),
+    (
+        re.compile(
+            r"^\s*(help|who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|"
+            r"what\s+can\s+i\s+ask(\s+you)?|how\s+do\s+you\s+work|"
+            r"what\s+do\s+you\s+know(\s+about)?)\s*[?!.]*\s*$",
+            re.I,
+        ),
+        "capabilities",
+    ),
+)
+
+
 @dataclass
 class RoutingDecision:
     """Where a question is going, and why."""
@@ -231,7 +267,7 @@ class RoutingDecision:
     @property
     def is_terminal(self) -> bool:
         """Routes that answer without retrieving anything."""
-        return self.route in (Route.REFUSE, Route.CLARIFY)
+        return self.route in (Route.REFUSE, Route.CLARIFY, Route.DIRECT)
 
     def summary(self) -> str:
         return (
@@ -317,6 +353,18 @@ class QueryRouter:
                 dates=dates,
             )
 
+        # ---- Small talk: no model call, no retrieval.
+        direct = self._check_direct(question)
+        if direct is not None:
+            return RoutingDecision(
+                route=Route.DIRECT,
+                original_query=question,
+                rewritten_query=question,
+                reason=direct,
+                confidence=1.0,
+                decided_by="rules",
+            )
+
         # ---- Then the semantic screen, on what the rules already cleared.
         #
         # This can only ADD a refusal. A request the rules blocked never reaches
@@ -368,6 +416,12 @@ class QueryRouter:
         for pattern, reason in EXFILTRATION_PATTERNS:
             if pattern.search(question):
                 return f"the request {reason}"
+        return None
+
+    def _check_direct(self, question: str) -> str | None:
+        for pattern, reason in DIRECT_PATTERNS:
+            if pattern.search(question):
+                return reason
         return None
 
     def _check_ambiguous(self, question: str) -> str | None:

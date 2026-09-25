@@ -142,6 +142,7 @@ class AnswerStatus(StrEnum):
     CONFLICTING_SOURCES = "conflicting_sources"
     REFUSED = "refused"
     CLARIFICATION_NEEDED = "clarification_needed"
+    DIRECT = "direct"  # small talk / capabilities; no evidence was needed
 
 
 class Answer(BaseModel):

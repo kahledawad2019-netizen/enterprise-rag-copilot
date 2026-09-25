@@ -1,75 +1,78 @@
 # TASK_STATE
 
 ## Current Goal
-Two working modes for the RAG copilot, one codebase:
-- **LOCAL**: browser → `cloud/api/server.py` (UI + API, :8000) → hybrid retrieval (embedded Qdrant + BM25) → Ollama (chat `qwen3:4b-instruct-2507-q4_K_M`, embeddings `nomic-embed-text`)
-- **CLOUD**: browser → same server in one Docker container on Render free → Groq (`llama-3.3-70b-versatile`) + fastembed ONNX (`nomic-ai/nomic-embed-text-v1.5-Q`), index baked at image build.
+Enterprise **hybrid** RAG: unstructured documents (vector RAG) + structured data (Text-to-SQL via Vanna) with intent routing, in two modes from one codebase:
+- **LOCAL**: browser → `cloud/api/server.py` (UI + API, :8000) → router (rules + heuristics) → hybrid retrieval (embedded Qdrant + BM25) and/or Vanna → read-only DuckDB → Ollama (`qwen3:4b-instruct-2507-q4_K_M`, embeddings `nomic-embed-text`). One command: `.\run_local.ps1`.
+- **CLOUD**: Streamlit Community Cloud (free, no card) → same engine → Groq (`qwen/qwen3.8-27b`, 429 fallback to gpt-oss-20b/120b) + fastembed + DuckDB built on first start + Vanna on Groq. Docker image (React UI) kept for any Docker host.
 
 ## Architecture Summary
-- App: `local-enterprise-copilot/src/enterprise_copilot` (Python 3.12 venv at `local-enterprise-copilot/.venv`).
-- API: `cloud/api/main.py` (FastAPI, API only; Worker path) + `cloud/api/server.py` (UI at `/`, API at `/api`).
-- UI: `cloud/ui` React 19 + Vite. `npm run build:open` = no Clerk (local/demo). `npm run build` = Clerk (staging gateway).
-- Providers: `llm/clients.py` (`build_chat_client`: ollama → OllamaChatClient; groq/openai → OpenAICompatChatClient; `build_embedding_client`: ollama | fastembed | cloudflare | openai).
-- DATABASE_BACKEND=none → documents-only; ROUTER_LLM=auto → LLM routing only if SQL enabled or hosted model.
+- Engine: `local-enterprise-copilot/src/enterprise_copilot` (Python 3.12 venv `local-enterprise-copilot/.venv`).
+- Routes: document_rag | text_to_sql | multi_source (HYBRID, parallel) | clarify | refuse | **direct** (template, no retrieval).
+- SQL path: schema_retriever → Vanna (`_ChatBridge` → `build_chat_client`) or native → SQLGuard (postgres dialect, tenant injection, row limit) → ReadOnlyRunner (DuckDB: sqlglot transpile + read-only handle + interrupt timeout) → self-correction on DB error (max 2, re-guarded).
+- DATABASE_BACKEND: duckdb (default local/cloud) | postgresql (Neon) | sqlserver | none. DuckDB built from `sql/postgres` + synthetic generator (`database/duckdb_store.py`, `scripts/build_duckdb.py`).
+- Docs: `docs/RAG_ARCHITECTURE.md`, `docs/DATABASE_SCHEMA.md`, `docs/DEPLOYMENT.md`.
 
 ## Completed
-- venv rebuilt (uv, Python 3.12). Tests: **442 passed, 1 skipped** (`pytest -m "not integration"`), ruff + mypy clean (src: 52 files; cloud/api 3 files).
-- Local E2E via API + streaming works (answered, grounded, cites D1). Routing no longer uses LLM locally (was 50 s).
-- Codex audit (15 findings) → fixed: #1 fail-open sparse filter, #2 error leakage, #3/#4 docs-only mode, #5/#6 reasoning models, #7 router schema, #9 nomic prefixes, #12 dedupe, #13 MMR, #15 SSE errors.
-- Retrieval holdout NDCG (hybrid): local Ollama nomic 0.910, cloud fastembed nomic 0.901.
-- Cloud rehearsal locally: health ok, retrieval 29 ms, RSS 310 MB (< Render 512 MB).
-- UI rewritten (chat product, conversations in localStorage, streaming, cited-source chips, knowledge base upload, dev tools). Screenshots OK desktop + narrow.
-- Root Dockerfile, .dockerignore, render.yaml, CI smoke test, run_local.py/.ps1/.sh.
+- Phase 1 (earlier): local Ollama + cloud Groq modes, production UI, security review, PR #6 (CI green), Streamlit deployment (c3968a5).
+- Phase 2 (this goal):
+  - DuckDB backend: full dataset 18 s / 24 MB (600 customers, 237k usage rows, 8.7k invoices, 4k tickets); 9/10 golden SQL run unchanged (10th is a parameter template); all 6 views; engine refuses writes.
+  - Vanna works with Groq and Ollama (LLM bridge), per-backend Chroma store.
+  - DIRECT route; parallel HYBRID gather; thread-local tracer; SQL self-correction loop (SQL_EXECUTION_RETRIES=2).
+  - Groq 429 → fallback models (measured: 8k TPM per model, ~5k tokens per grounded answer).
+  - Streamlit: SQL on, Data & SQL panel, limits 6/session/min, 8/app/min. AppTest from fresh start: 96 s first start; ARR NA→tenant 1, EU→tenant 2 (isolation verified); hybrid cites D1-D5 + S1.
+  - run_local: duckdb default, ROUTER_LLM=never (heuristics 12/14 correct), auto-installs duckdb/vanna in old venvs.
+  - Dockerfile builds DuckDB at image build (native generator in the image).
+  - Tests: 27 new (tests/test_duckdb_backend.py) pass; full suite 452 passed, 14 failures are all environment (old .env Ollama models not pulled, SQL Server login) - not regressions.
 
 ## Current Task
-Codex checkpoint review (full diff) running. Writing docs: docs/RAG_ARCHITECTURE.md, docs/DEPLOYMENT.md, .env.example.
+Codex review of phase 2 + Codex-written Vanna bridge tests running; Docker image build running. Then fix findings, commit, push, CI.
 
 ## Next Tasks
-1. Apply material Codex review findings.
-2. Commit on branch `feat/local-ollama-cloud-groq` (stage by name!), push, open PR, watch CI (Cloud image smoke test).
-3. Ask user: GROQ_API_KEY + Render account (Blueprint from render.yaml). Test Groq locally with key.
-4. Deploy on Render; E2E test deployed URL; final Codex review; final report.
+1. Apply verified Codex findings; re-run tests.
+2. Commit (stage by name), push, watch CI (Cloud image smoke test now builds DuckDB).
+3. User redeploys Streamlit app (same branch/file path) - first start ~2-3 min on Streamlit.
+4. Final report.
 
 ## Important Files
-- `run_local.py`, `Dockerfile`, `render.yaml`, `cloud/api/{main,server,uploads}.py`, `cloud/ui/src/{App.tsx,api.ts,app.css,components/ChatMessage.tsx,components/KnowledgeBase.tsx}`
-- `local-enterprise-copilot/src/enterprise_copilot/{llm/clients.py,config/settings.py,routing/orchestrator.py,generation/answerer.py,retrieval/embedder.py}`
+- New: `database/duckdb_store.py`, `scripts/build_duckdb.py`, `tests/test_duckdb_backend.py`, `docs/DATABASE_SCHEMA.md`
+- Changed: `config/settings.py` (DuckDBSettings, execution_dialect, sql_execution_retries, fallback models), `llm/clients.py` (RateLimitedError, fallback), `routing/{router,orchestrator}.py`, `observability/tracing.py`, `database/{connection,read_only_runner,synthetic_loader}.py`, `text_to_sql/{schema_retriever,vanna_provider}.py`, `cloud/streamlit/*`, `run_local.py(+.ps1/.sh)`, `Dockerfile`, `.dockerignore`, `cloud/api/requirements*.txt`, `.env.example`.
 
 ## Commands That Work
-- Local app: `.\run_local.ps1` or `local-enterprise-copilot/.venv/Scripts/python run_local.py` → http://127.0.0.1:8000
-- Tests: `cd local-enterprise-copilot; .venv/Scripts/python -m pytest -m "not integration" -q -p no:cacheprovider --ignore="tests/pytest-of-LAPTOP WORLD" --basetemp="$TEMP/pt-rag"`
-- API lint/types: `ruff check cloud/api run_local.py`; `mypy cloud/api/main.py cloud/api/server.py cloud/api/uploads.py --python-version 3.12 --ignore-missing-imports`
-- UI: `cd cloud/ui; npm.cmd run build:open`
+- Local app: `.\run_local.ps1` → http://127.0.0.1:8000
+- Build DB: `local-enterprise-copilot/.venv/Scripts/python local-enterprise-copilot/scripts/build_duckdb.py --full --rebuild`
+- Streamlit locally: `GROQ_API_KEY=... local-enterprise-copilot/.venv/Scripts/python -m streamlit run cloud/streamlit/streamlit_app.py`
+- Tests: `cd local-enterprise-copilot; .venv/Scripts/python -m pytest tests -q -p no:cacheprovider --ignore="tests/pytest-of-LAPTOP WORLD" --basetemp="$TEMP/pt-rag"`
 - Lock: `uv pip compile cloud/api/requirements.txt --python-version 3.13 --universal --output-file cloud/api/requirements.lock.txt`
-- Screenshot: msedge --headless=new --screenshot (min viewport 492 px in headless)
 
 ## Commands That Failed
-- qwen3:4b (Thinking-2507) with think=False → reasoning leaks into content. Solution: never send `think`.
-- Bash heredoc with complex Python quoting → use Write/Edit tools.
-- run_local.py respecting .env QDRANT_PATH → opened old index; now QDRANT_* forced for local.
+- DuckDB: cross-schema FKs unsupported → dropped + recorded in ai.schema_relationships.
+- Regex `^\s*(REVOKE|GRANT)` with IGNORECASE matched prose in comments → case-sensitive, `[ \t]*`.
+- Bash heredoc Python edits turn `\n` escapes into real newlines → use Edit/Write for strings with escapes.
 
 ## Decisions Made
-- Keep existing provider abstraction; Groq = OpenAI-compatible provider with GROQ_* aliases.
-- Hosting: Render free Docker (HF Docker Spaces now need PRO; Cloud Run needs billing; Fly paid).
-- Single container serving UI + API (same origin), index baked at build time, no hosted vector DB.
-- Public demo auth: API_AUTH_MODE=public + per-IP rate limit (12/min) — corpus is synthetic. Clerk/Worker gateway retained for locked-down deployments.
-- Uploaded docs: public within deployment, ephemeral on Render free.
+- Structured store: DuckDB (embedded, Postgres-like, real schemas, read-only mode) instead of SQLite (no schemas) or Neon (account + credentials). Neon/SQL Server still supported.
+- Model writes PostgreSQL; transpile only after the guard approves.
+- Local routing without LLM (CPU cost); cloud routing with LLM + intent screen.
+- Vanna in Streamlit (per goal); native generator in the Docker image (image size).
+- Hosting: Streamlit Community Cloud (Render/Oracle/GCP need a card; HF Docker/Gradio need PRO).
 
 ## Environment Variables
-Cloud: GROQ_API_KEY (secret), GROQ_MODEL, RATE_LIMIT_PER_MINUTE, MAX_UPLOAD_MB, MAX_UPLOADED_DOCUMENTS, UPLOADS_ENABLED, API_AUTH_MODE, ROUTER_LLM. Rest defaulted in Dockerfile.
-Local: OLLAMA_HOST, OLLAMA_CHAT_MODEL, OLLAMA_EMBEDDING_MODEL (launcher defaults).
+Cloud (Streamlit secrets): GROQ_API_KEY (required), GROQ_MODEL, GROQ_FALLBACK_MODELS, TEXT_TO_SQL_PROVIDER. App forces DATABASE_BACKEND=duckdb, LLM_PROVIDER=groq, EMBEDDING_PROVIDER=fastembed.
+Local: OLLAMA_*, DATABASE_BACKEND, DUCKDB_PATH, ROUTER_LLM, SQL_EXECUTION_RETRIES (launcher defaults).
 
 ## Deployment State
-Not deployed yet. Needs user: Groq key + Render account.
+Streamlit app: user deploying from branch feat/local-ollama-cloud-groq, main file cloud/streamlit/streamlit_app.py (documents-only version pushed in c3968a5; SQL version pending push).
 
-## Known Bugs
-- Local CPU generation ~60–100 s per answer (hardware); streaming mitigates.
+## Known Bugs / Limits
+- Local CPU generation ~40–100 s per answer.
+- Groq free tier ≈ 4-5 grounded answers/min across 3 models.
+- DuckDB has no RLS: tenant isolation = guard-injected predicate (tested).
 
 ## Codex Delegations
-- ✅ Checkpoint 1 audit (task-muh6guzx-2dxa6p). ✅ 4 retrieval/router fixes (task-muh6s4dd-44lth7). ✅ API tests (task-muh7u7v7-zzt8ak, 19 tests).
-- ⏳ Checkpoint 2–4 full-diff review (running).
+- ✅ Hosting research (partial; usage limit hit).
+- ⏳ Phase-2 review (task-muhhmxg2-0rphl8). ⏳ Vanna bridge tests (new file tests/test_vanna_bridge.py only).
+- ✅ Earlier: checkpoint audits and fixes (see git history).
 
 ## Do Not Forget
-- Never commit: REVIEW-REQUEST.md, SESSION-HANDOFF.md, CLAUDE-CLOUD-DEPLOYMENT-PROMPT.md, CODEX-CONTINUE-PROMPT.md, .git-temp/, .tmp-npm-cache/, .wrangler-temp/, local-enterprise-copilot/tests/pytest-of-LAPTOP WORLD/.
+- Never commit: REVIEW-REQUEST.md, SESSION-HANDOFF.md, CLAUDE-CLOUD-DEPLOYMENT-PROMPT.md, CODEX-CONTINUE-PROMPT.md, SESSION-*.md, .git-temp/, .tmp-npm-cache/, .wrangler-temp/, local-enterprise-copilot/tests/pytest-of-LAPTOP WORLD/.
 - Stage by file name; `git diff --cached` secret check. main is protected → PR.
-- git push may hang (Git Credential Manager GUI) — handoff note.
-- Local server running in background on :8000 (task bmrmiflyx) — stop before tests that touch data/qdrant-local.

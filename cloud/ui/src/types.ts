@@ -20,7 +20,8 @@ export type AnswerStatus =
   | "insufficient_evidence"
   | "conflicting_sources"
   | "refused"
-  | "clarification_needed";
+  | "clarification_needed"
+  | "direct";
 
 export type Strategy = "dense" | "sparse" | "hybrid" | "reranked";
 

@@ -38,6 +38,12 @@ psycopg[binary]>=3.2,<4
 SQLAlchemy>=2.0.36,<3
 sqlglot>=25.0,<31
 
+# --- embedded analytics database (DATABASE_BACKEND=duckdb) ---
+# Built at image build from sql/postgres + the synthetic generator (Faker),
+# opened read-only at runtime. No database account or server.
+duckdb>=1.1,<2
+Faker>=30.0
+
 # --- vector store & retrieval ---
 qdrant-client>=1.12,<2
 rank-bm25>=0.2.2

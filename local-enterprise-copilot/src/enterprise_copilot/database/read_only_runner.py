@@ -211,6 +211,8 @@ class ReadOnlyRunner:
     def _execute(
         self, sql: str, *, tenant_id: int | None
     ) -> tuple[list[dict[str, Any]], list[str]]:
+        if self.settings.database_backend == "duckdb":
+            return self._execute_duckdb(sql)
         with raw_connection(self.settings) as conn:
             cursor = conn.cursor()
             if self.settings.database_backend == "postgresql":
@@ -239,6 +241,30 @@ class ReadOnlyRunner:
             if cursor.description is None:
                 return [], []
 
+            columns = [c[0] for c in cursor.description]
+            maximum = self.settings.database.max_result_rows
+            fetched = cursor.fetchall() if maximum <= 0 else cursor.fetchmany(maximum + 1)
+            rows = [
+                {column: _coerce(value) for column, value in zip(columns, row, strict=True)}
+                for row in fetched
+            ]
+            return rows, columns
+
+    def _execute_duckdb(self, sql: str) -> tuple[list[dict[str, Any]], list[str]]:
+        """Execute guard-approved PostgreSQL on the read-only DuckDB file.
+
+        There is no session tenant context to set: tenant isolation on DuckDB
+        rests on the guard's injected predicate, which `sql` already carries.
+        """
+        from .duckdb_store import execute_with_timeout, to_execution_sql
+
+        executable = to_execution_sql(sql)
+        with raw_connection(self.settings) as conn:
+            cursor = execute_with_timeout(
+                conn, executable, self.settings.database.query_timeout_seconds
+            )
+            if cursor.description is None:
+                return [], []
             columns = [c[0] for c in cursor.description]
             maximum = self.settings.database.max_result_rows
             fetched = cursor.fetchall() if maximum <= 0 else cursor.fetchmany(maximum + 1)
@@ -299,7 +325,24 @@ class ReadOnlyRunner:
         Auditing must never break the request: if the audit insert fails, the
         failure is logged and the query proceeds. An unavailable audit table is
         an operational problem, not a reason to deny a legitimate question.
+
+        DuckDB is opened read-only, so it cannot hold its own audit trail; the
+        event goes to the structured log instead, alongside the trace.
         """
+        if self.settings.database_backend == "duckdb":
+            log.info(
+                "audit trace=%s user=%s tenant=%s allowed=%s block=%s rows=%s ms=%s error=%s sql=%s",
+                trace_id,
+                app_user,
+                tenant_id,
+                allowed,
+                block_reason,
+                row_count,
+                None if duration_ms is None else int(duration_ms),
+                error_category,
+                " ".join(sql.split())[:500],
+            )
+            return
         try:
             with raw_connection(self.settings, autocommit=True) as conn:
                 statement = """

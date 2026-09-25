@@ -61,3 +61,5 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+data/vanna_chroma_*/
+data/warehouse/

@@ -125,7 +125,9 @@ class Answerer:
             text=text,
             status=status,
             evidence=package,
-            model=self.settings.chat_model,
+            # After a rate-limit fallback the answering model differs from
+            # the configured one; the answer records which actually spoke.
+            model=getattr(self._client, "last_model", None) or self.settings.chat_model,
             prompt_version=PROMPT_VERSION,
             trace_id=trace_id,
             latency_ms=(time.perf_counter() - started) * 1000,

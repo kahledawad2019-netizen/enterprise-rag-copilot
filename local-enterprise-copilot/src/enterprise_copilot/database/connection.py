@@ -37,6 +37,18 @@ def raw_connection(
     run inside an explicit transaction.
     """
     settings = settings or get_settings()
+    if settings.database_backend == "none":
+        raise DatabaseUnavailableError("No database is configured (DATABASE_BACKEND=none).")
+    if settings.database_backend == "duckdb":
+        # Always read-only here: the only writer is duckdb_store.build_database.
+        from .duckdb_store import DuckDBUnavailableError, connect
+
+        try:
+            with connect(settings, read_only=True) as conn:
+                yield conn
+        except DuckDBUnavailableError as exc:
+            raise DatabaseUnavailableError(str(exc)) from exc
+        return
     if settings.database_backend == "postgresql":
         try:
             import psycopg
@@ -104,6 +116,17 @@ def server_info(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
     with raw_connection(settings) as conn:
         cur = conn.cursor()
+        if settings.database_backend == "duckdb":
+            import duckdb
+
+            return {
+                "edition": "DuckDB (embedded, read-only)",
+                "version": duckdb.__version__,
+                "windows_auth_only": False,
+                "login": "read-only file handle",
+                "database": settings.duckdb.path.name,
+                "is_sysadmin": False,
+            }
         if settings.database_backend == "postgresql":
             cur.execute(
                 "SELECT version(), current_user, current_database(), "

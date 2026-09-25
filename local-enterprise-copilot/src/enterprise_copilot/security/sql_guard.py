@@ -51,6 +51,7 @@ from .tenant_injection import (
 
 log = logging.getLogger(__name__)
 
+
 class Violation(StrEnum):
     PARSE_ERROR = "parse_error"
     NOT_A_SELECT = "not_a_select"
@@ -129,6 +130,48 @@ SUSPICIOUS_FUNCTIONS = {
     "dbcc",
     "sp_addlogin",
     "sp_password",
+    # PostgreSQL: dynamic SQL, files, server settings, sessions.
+    "query_to_xml",
+    "query_to_xml_and_xmlschema",
+    "table_to_xml",
+    "cursor_to_xml",
+    "database_to_xml",
+    "schema_to_xml",
+    "dblink",
+    "dblink_exec",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "lo_import",
+    "lo_export",
+    "current_setting",
+    "set_config",
+    "pg_sleep",
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    # DuckDB: dynamic SQL, files, environment, settings. `query('...')` runs
+    # a SQL string the guard cannot inspect - it read every tenant's rows in
+    # the review that found it.
+    "query",
+    "query_table",
+    "read_text",
+    "read_blob",
+    "read_csv",
+    "read_csv_auto",
+    "read_json",
+    "read_json_auto",
+    "read_json_objects",
+    "read_ndjson",
+    "read_parquet",
+    "parquet_scan",
+    "parquet_metadata",
+    "glob",
+    "getenv",
+    "duckdb_settings",
+    "duckdb_secrets",
+    "duckdb_extensions",
+    "sniff_csv",
 }
 
 # Second-pass regex. Defence in depth only: the parser is authoritative.
@@ -240,7 +283,24 @@ class SQLGuard:
 
         result.is_safe = not result.violations
         if result.is_safe:
-            result.rewritten_sql = self._apply_row_limit(statement)
+            limited = self._apply_row_limit(statement)
+            if limited is not None:
+                result.rewritten_sql = limited
+            elif result.tenant_injected:
+                # The query already had a LIMIT, so no row limit was added -
+                # but the tenant predicate was. Returning None here once made
+                # `effective_sql` fall back to the ORIGINAL text and ran
+                # `... LIMIT 10` across every tenant (found in review).
+                try:
+                    result.rewritten_sql = statement.sql(dialect=self.dialect)
+                except Exception as exc:
+                    result.is_safe = False
+                    result.violations.append(
+                        (
+                            Violation.MISSING_TENANT_FILTER,
+                            f"the tenant filter could not be applied: {str(exc)[:120]}",
+                        )
+                    )
 
         log.info("SQL guard: %s", result.summary())
         return result
@@ -409,13 +469,27 @@ class SQLGuard:
             )
 
     def _check_suspicious(self, statement: exp.Expression, result: ValidationResult) -> None:
-        for function in statement.find_all(exp.Anonymous):
-            name = (function.this or "").lower() if isinstance(function.this, str) else ""
+        for function in statement.find_all(exp.Func):
+            name = _function_name(function)
             if name in SUSPICIOUS_FUNCTIONS:
                 result.violations.append(
                     (
                         Violation.SUSPICIOUS_CONSTRUCT,
                         f"function '{name}' is not permitted",
+                    )
+                )
+
+        # A function in FROM position (`FROM query('...')`, `FROM
+        # read_csv(...)`, `FROM generate_series(...)`) is a table the schema
+        # allow-list and the tenant check cannot see: it has no schema, and
+        # its name is empty to the table collector. None is needed to answer
+        # business questions, so every one is refused rather than listed.
+        for table in statement.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                result.violations.append(
+                    (
+                        Violation.SUSPICIOUS_CONSTRUCT,
+                        f"table function '{str(table.this)[:40]}' is not permitted",
                     )
                 )
 
@@ -570,6 +644,15 @@ class SQLGuard:
         except Exception as exc:  # never let a rewrite failure block a safe query
             log.warning("Could not apply the row limit: %s", exc)
             return None
+
+
+def _function_name(function: exp.Func) -> str:
+    if isinstance(function, exp.Anonymous):
+        return function.name.lower()
+    try:
+        return function.sql_name().lower()
+    except Exception:
+        return ""
 
 
 def validate_sql(sql: str, *, tenant_id: int | None = None) -> ValidationResult:

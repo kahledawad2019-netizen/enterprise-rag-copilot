@@ -43,38 +43,69 @@ def installed_vanna_version() -> str:
 
 
 def _build_vanna_class():
-    """Compose Vanna's Chroma store and Ollama client, with our fixes applied.
+    """Compose Vanna's Chroma store with the application's chat client.
 
     Built lazily inside a function so importing this module does not require
     Vanna to be installed; `build_provider` catches the ImportError and falls
     back to the native provider.
-    """
-    from vanna.legacy.chromadb import ChromaDB_VectorStore
-    from vanna.legacy.ollama import Ollama
 
-    class _LocalVanna(ChromaDB_VectorStore, Ollama):
-        """Vanna wired to the local Chroma store and the local Ollama model."""
+    Vanna's own LLM classes each hard-wire one vendor (`legacy.ollama.Ollama`
+    was used originally). Instead, `submit_prompt` goes through
+    `build_chat_client`, so Vanna runs on whichever provider the deployment
+    uses - local Ollama or Groq - with the same reasoning-stripping, error
+    handling and server-side key as every other model call.
+    """
+    from vanna.legacy.base import VannaBase
+    from vanna.legacy.chromadb import ChromaDB_VectorStore
+
+    class _ChatBridge(VannaBase):
+        """VannaBase's LLM half, implemented on the provider-agnostic client."""
+
+        settings: Settings
+
+        def system_message(self, message: str) -> dict[str, str]:
+            return {"role": "system", "content": message}
+
+        def user_message(self, message: str) -> dict[str, str]:
+            return {"role": "user", "content": message}
+
+        def assistant_message(self, message: str) -> dict[str, str]:
+            return {"role": "assistant", "content": message}
+
+        def submit_prompt(self, prompt: list[dict[str, str]], **kwargs: Any) -> str:
+            from ..llm import build_chat_client
+
+            if getattr(self, "_chat_client", None) is None:
+                self._chat_client = build_chat_client(self.settings)
+            response = self._chat_client.chat(
+                model=self.settings.chat_model,
+                messages=prompt,
+                options={
+                    "num_ctx": self.settings.profile.chat_context_tokens,
+                    "temperature": 0.0,
+                    "num_predict": 800,
+                },
+                keep_alive=self.settings.ollama.keep_alive,
+            )
+            return response["message"]["content"]
+
+    class _LocalVanna(ChromaDB_VectorStore, _ChatBridge):
+        """Vanna with a local Chroma store and the configured chat provider."""
 
         def __init__(self, settings: Settings) -> None:
             self.settings = settings
+            self._chat_client = None
+            # One store per SQL backend: DDL trained from SQL Server must not
+            # be retrieved as context for a PostgreSQL or DuckDB deployment.
             store_path = settings.project_root / "data" / "vanna_chroma"
+            if settings.database_backend != "sqlserver":
+                store_path = store_path.with_name(f"vanna_chroma_{settings.database_backend}")
             store_path.mkdir(parents=True, exist_ok=True)
 
             ChromaDB_VectorStore.__init__(
                 self, config={"path": str(store_path), "client": "persistent", "n_results": 6}
             )
-            Ollama.__init__(
-                self,
-                config={
-                    "model": settings.chat_model,
-                    "ollama_host": settings.ollama.host,
-                    "ollama_timeout": settings.ollama.timeout_seconds,
-                    "options": {
-                        "num_ctx": settings.profile.chat_context_tokens,
-                        "temperature": 0.0,
-                    },
-                },
-            )
+            _ChatBridge.__init__(self, config={})  # type: ignore[call-arg]
 
         def log(self, message: str, title: str = "Info") -> None:
             """Vanna prints whole prompts to stdout. Route that to the logger."""
