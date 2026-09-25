@@ -25,42 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 def load_reference_data(conn) -> dict:
     """Read the reference rows the generator needs (created by script 007)."""
-    cursor = conn.cursor()
+    from enterprise_copilot.database.synthetic_loader import read_reference_data
 
-    def rows(query: str) -> list[dict]:
-        cursor.execute(query)
-        columns = [c[0] for c in cursor.description]
-        return [dict(zip(columns, r, strict=True)) for r in cursor.fetchall()]
-
-    reference = {
-        "tenants": rows(
-            "SELECT tenant_id, tenant_code, tenant_name, region, "
-            "default_currency, time_zone FROM core.tenants ORDER BY tenant_id"
-        ),
-        "products": rows(
-            "SELECT product_id, product_code, product_name, product_family "
-            "FROM core.products ORDER BY product_id"
-        ),
-        "plans": rows(
-            "SELECT plan_id, product_id, plan_code, plan_name, tier, "
-            "billing_interval, list_price_monthly, seats_included "
-            "FROM core.plans ORDER BY plan_id"
-        ),
-        "sla_policies": rows(
-            "SELECT sla_policy_id, policy_code, plan_tier, priority, "
-            "first_response_minutes, resolution_minutes, version, "
-            "effective_from, effective_to FROM support.sla_policies "
-            "ORDER BY effective_from DESC, sla_policy_id"
-        ),
-    }
-
-    missing = [name for name, values in reference.items() if not values]
-    if missing:
-        raise RuntimeError(
-            f"Reference data missing: {', '.join(missing)}. "
-            "Run: .venv\\Scripts\\python scripts\\setup_database.py --only 007"
-        )
-    return reference
+    return read_reference_data(conn)
 
 
 def main() -> int:

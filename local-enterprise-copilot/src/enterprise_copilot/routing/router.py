@@ -9,6 +9,7 @@ happens:
     MULTI_SOURCE   policy *versus* actual              -> both
     CLARIFY        ambiguous; guessing would mislead   -> ask one question
     REFUSE         destructive, or out of scope        -> decline
+    DIRECT         greeting, thanks, "what can you do" -> reply, no retrieval
 
 ## Why refusal starts as a rule
 
@@ -53,12 +54,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..config import Settings, get_settings
+from ..llm.clients import strip_reasoning
 from ..security.intent_classifier import IntentVerdict, LLMIntentScreen
 
 log = logging.getLogger(__name__)
@@ -72,6 +75,7 @@ class Route(StrEnum):
     MULTI_SOURCE = "multi_source"
     CLARIFY = "clarify"
     REFUSE = "refuse"
+    DIRECT = "direct"
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +197,40 @@ AMBIGUITY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# Small talk and questions about the assistant itself. Matched against the
+# WHOLE message, so "hi, what is the refund policy?" is still a document
+# question. Checked after the refusal rules: "hello, delete all customers" is
+# refused, not greeted. Answering these from a template rather than retrieval
+# is faster and cannot invent company facts.
+DIRECT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^\s*(hi|hello|hey|hiya|greetings|salam|salaam|marhaba|ahlan|"
+            r"good\s+(morning|afternoon|evening))(\s+there)?[\s!.,]*$",
+            re.I,
+        ),
+        "greeting",
+    ),
+    (
+        re.compile(
+            r"^\s*(thanks|thank\s+you|thx|cheers|great|perfect|ok(ay)?)"
+            r"(\s+(so|very)\s+much)?[\s!.,]*$",
+            re.I,
+        ),
+        "thanks",
+    ),
+    (
+        re.compile(
+            r"^\s*(help|who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|"
+            r"what\s+can\s+i\s+ask(\s+you)?|how\s+do\s+you\s+work|"
+            r"what\s+do\s+you\s+know(\s+about)?)\s*[?!.]*\s*$",
+            re.I,
+        ),
+        "capabilities",
+    ),
+)
+
+
 @dataclass
 class RoutingDecision:
     """Where a question is going, and why."""
@@ -229,7 +267,7 @@ class RoutingDecision:
     @property
     def is_terminal(self) -> bool:
         """Routes that answer without retrieving anything."""
-        return self.route in (Route.REFUSE, Route.CLARIFY)
+        return self.route in (Route.REFUSE, Route.CLARIFY, Route.DIRECT)
 
     def summary(self) -> str:
         return (
@@ -315,6 +353,18 @@ class QueryRouter:
                 dates=dates,
             )
 
+        # ---- Small talk: no model call, no retrieval.
+        direct = self._check_direct(question)
+        if direct is not None:
+            return RoutingDecision(
+                route=Route.DIRECT,
+                original_query=question,
+                rewritten_query=question,
+                reason=direct,
+                confidence=1.0,
+                decided_by="rules",
+            )
+
         # ---- Then the semantic screen, on what the rules already cleared.
         #
         # This can only ADD a refusal. A request the rules blocked never reaches
@@ -368,6 +418,12 @@ class QueryRouter:
                 return f"the request {reason}"
         return None
 
+    def _check_direct(self, question: str) -> str | None:
+        for pattern, reason in DIRECT_PATTERNS:
+            if pattern.search(question):
+                return reason
+        return None
+
     def _check_ambiguous(self, question: str) -> str | None:
         for pattern, reason in AMBIGUITY_PATTERNS:
             if pattern.search(question.strip()):
@@ -378,6 +434,7 @@ class QueryRouter:
     def _classify_with_llm(
         self, question: str, identifiers: list[str], dates: list[str]
     ) -> RoutingDecision | None:
+        """Treat malformed schemas like parse failures, before using model fields."""
         try:
             client = self._client
             if client is None:
@@ -400,17 +457,25 @@ class QueryRouter:
                 },
                 keep_alive=self.settings.ollama.keep_alive,
             )
-            payload = json.loads(response["message"]["content"])
+            payload = json.loads(strip_reasoning(response["message"]["content"]))
+            if not isinstance(payload, dict):
+                raise ValueError("routing response must be an object")
+            for name in ("route", "rewritten_query", "reason"):
+                if not isinstance(payload.get(name, ""), str):
+                    raise ValueError(f"{name} must be a string")
+            for name in ("document_subquestion", "data_subquestion"):
+                if payload.get(name) is not None and not isinstance(payload[name], str):
+                    raise ValueError(f"{name} must be a string or null")
+            confidence = payload.get("confidence", 0.5)
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+            ):
+                raise ValueError("confidence must be a finite number")
+            route = Route(payload.get("route", "").strip().lower())
         except Exception as exc:
             log.warning("LLM routing failed (%s); falling back to heuristics", exc)
-            return None
-
-        try:
-            route = Route(str(payload.get("route", "")).strip().lower())
-        except ValueError:
-            log.warning(
-                "Router returned an unknown route %r; using heuristics", payload.get("route")
-            )
             return None
 
         # The model must not refuse or clarify: those are rule decisions, and
@@ -426,7 +491,7 @@ class QueryRouter:
             original_query=question,
             rewritten_query=rewritten,
             reason=str(payload.get("reason", ""))[:200],
-            confidence=float(payload.get("confidence", 0.5) or 0.5),
+            confidence=float(confidence),
             decided_by="llm",
             identifiers=identifiers,
             dates=dates,

@@ -17,9 +17,27 @@ certifi==2026.7.22
 charset-normalizer==3.5.1
     # via requests
 click==8.5.0
-    # via uvicorn
+    # via
+    #   huggingface-hub
+    #   uvicorn
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via
+    #   loguru
+    #   tqdm
+duckdb==1.5.5
+    # via -r cloud/api/requirements.txt
+faker==40.39.0
+    # via -r cloud/api/requirements.txt
 fastapi==0.141.1
     # via -r cloud/api/requirements.txt
+fastembed==0.8.1
+    # via -r cloud/api/requirements.txt
+filelock==4.0.3
+    # via huggingface-hub
+flatbuffers==25.12.19
+    # via onnxruntime
+fsspec==2026.9.0
+    # via huggingface-hub
 googleapis-common-protos==1.75.3
     # via opentelemetry-exporter-otlp-proto-http
 greenlet==3.5.6 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'
@@ -32,6 +50,8 @@ h11==0.16.0
     #   uvicorn
 h2==4.4.1
     # via httpx
+hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
 hpack==4.2.0
     # via h2
 httpcore==1.0.9
@@ -40,8 +60,13 @@ httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
+    #   huggingface-hub
     #   ollama
     #   qdrant-client
+huggingface-hub==1.33.0
+    # via
+    #   fastembed
+    #   tokenizers
 hyperframe==6.1.0
     # via h2
 idna==3.20
@@ -49,20 +74,28 @@ idna==3.20
     #   anyio
     #   httpx
     #   requests
+loguru==0.7.3
+    # via fastembed
 lxml==6.1.3
     # via python-docx
 markdown-it-py==4.2.0
     # via -r cloud/api/requirements.txt
 mdurl==0.1.2
     # via markdown-it-py
+mmh3==5.3.0
+    # via fastembed
 numpy==2.5.3
     # via
     #   -r cloud/api/requirements.txt
+    #   fastembed
+    #   onnxruntime
     #   pandas
     #   qdrant-client
     #   rank-bm25
 ollama==0.6.2
     # via -r cloud/api/requirements.txt
+onnxruntime==1.30.0
+    # via fastembed
 opentelemetry-api==1.44.0
     # via
     #   -r cloud/api/requirements.txt
@@ -83,19 +116,28 @@ opentelemetry-sdk==1.44.0
     #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-semantic-conventions==0.65b0
     # via opentelemetry-sdk
+packaging==26.3
+    # via
+    #   huggingface-hub
+    #   onnxruntime
 pandas==3.0.6
     # via -r cloud/api/requirements.txt
+pillow==12.3.0
+    # via fastembed
 portalocker==3.2.0
     # via qdrant-client
 protobuf==7.36.2
     # via
     #   googleapis-common-protos
+    #   onnxruntime
     #   opentelemetry-proto
     #   qdrant-client
 psycopg==3.3.6
     # via -r cloud/api/requirements.txt
 psycopg-binary==3.3.6 ; implementation_name != 'pypy'
     # via psycopg
+py-rust-stemmers==0.1.8
+    # via fastembed
 pydantic==2.13.5
     # via
     #   -r cloud/api/requirements.txt
@@ -118,11 +160,14 @@ python-dotenv==1.2.3
     #   -r cloud/api/requirements.txt
     #   pydantic-settings
     #   uvicorn
+python-multipart==0.0.32
+    # via -r cloud/api/requirements.txt
 pywin32==312 ; sys_platform == 'win32'
     # via portalocker
 pyyaml==6.0.3
     # via
     #   -r cloud/api/requirements.txt
+    #   huggingface-hub
     #   uvicorn
 qdrant-client==1.19.1
     # via -r cloud/api/requirements.txt
@@ -131,6 +176,7 @@ rank-bm25==0.2.2
 requests==2.34.2
     # via
     #   -r cloud/api/requirements.txt
+    #   fastembed
     #   opentelemetry-exporter-otlp-proto-http
 six==1.17.0
     # via python-dateutil
@@ -142,11 +188,18 @@ starlette==1.6.0
     # via fastapi
 structlog==26.1.0
     # via -r cloud/api/requirements.txt
+tokenizers==0.23.2
+    # via fastembed
+tqdm==4.70.1
+    # via
+    #   fastembed
+    #   huggingface-hub
 typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
     #   grpcio
+    #   huggingface-hub
     #   opentelemetry-api
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
@@ -163,6 +216,7 @@ typing-inspection==0.4.4
     #   pydantic-settings
 tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via
+    #   faker
     #   pandas
     #   psycopg
 urllib3==2.8.0
@@ -177,3 +231,5 @@ watchfiles==1.3.0
     # via uvicorn
 websockets==17.1
     # via uvicorn
+win32-setctime==1.2.0 ; sys_platform == 'win32'
+    # via loguru

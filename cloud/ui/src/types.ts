@@ -20,7 +20,8 @@ export type AnswerStatus =
   | "insufficient_evidence"
   | "conflicting_sources"
   | "refused"
-  | "clarification_needed";
+  | "clarification_needed"
+  | "direct";
 
 export type Strategy = "dense" | "sparse" | "hybrid" | "reranked";
 
@@ -98,6 +99,14 @@ export interface Persona {
 
 export interface MetaResponse {
   app_name: string;
+  /** Which runtime answers: drives the LOCAL / CLOUD badge. */
+  deployment_mode: "local" | "cloud";
+  llm_provider: string;
+  embedding_provider: string;
+  embedding_model: string;
+  sql_enabled: boolean;
+  upload_enabled: boolean;
+  max_upload_mb: number;
   personas: Persona[];
   strategies: Strategy[];
   default_strategy: Strategy;
@@ -211,6 +220,7 @@ export interface DocumentSummary {
   tags: string[];
   words: number;
   readable: boolean;
+  source?: "corpus" | "upload";
 }
 
 export interface DocumentsResponse {
@@ -220,3 +230,17 @@ export interface DocumentsResponse {
   hidden_by_permissions: number;
   persona: string;
 }
+
+export interface UploadResponse {
+  doc_id: string;
+  title: string;
+  chunks_written: number;
+  chunk_count: number;
+}
+
+/** Server-sent events from POST /ask/stream, in order. */
+export type StreamEvent =
+  | { type: "sources"; trace_id: string; route: Route | ""; sources: SourceRef[] }
+  | { type: "token"; text: string }
+  | { type: "done"; result: AskResponse }
+  | { type: "error"; error: string; detail: string };

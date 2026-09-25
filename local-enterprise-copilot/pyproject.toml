@@ -31,6 +31,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     "SQLAlchemy>=2.0.36,<3",
     "sqlglot>=25.0,<31",
+    # --- embedded analytics database (DATABASE_BACKEND=duckdb) ---
+    "duckdb>=1.1,<2",
 
     # --- vector store & retrieval ---
     "qdrant-client>=1.12,<2",
@@ -82,6 +84,12 @@ vanna = [
     "vanna[chromadb,ollama]==2.0.2",
 ]
 
+# In-process ONNX embeddings (EMBEDDING_PROVIDER=fastembed): what the cloud
+# image uses, and what a machine without Ollama can use to build an index.
+cloud = [
+    "fastembed>=0.5,<1",
+]
+
 # Local trace UI. Entirely optional; the app runs without it.
 phoenix = [
     "arize-phoenix>=5.0",
@@ -100,6 +108,8 @@ dev = [
     # a machine that happened to have fastapi reported them as passing.
     # Declared here so the suite is self-contained.
     "fastapi>=0.115,<1",
+    # The upload endpoint's multipart parsing, exercised by the API tests.
+    "python-multipart>=0.0.18",
     "jupyter>=1.1",
     "nbformat>=5.10",
     "matplotlib>=3.9",
@@ -160,6 +170,8 @@ module = [
     # only), so a clean install has nothing for mypy to resolve. Local runs
     # passed solely because a developer happened to have it installed - which
     # is the machine-specific release gate this block exists to prevent.
+    "fastembed",
+    "fastembed.*",
     "vanna",
     "vanna.*",
 ]

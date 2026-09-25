@@ -37,3 +37,7 @@ desktop.ini
 # ---- Logs ----
 *.log
 /logs/
+
+# Streamlit secrets: only the .example template is committed
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml

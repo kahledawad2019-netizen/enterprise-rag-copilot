@@ -1,5 +1,5 @@
 # The backend image is built from the repository root, but it needs only four
-# source trees.  A whitelist keeps real .env files, copied virtualenvs, Git
+# source trees, plus the UI.  A whitelist keeps real .env files, copied virtualenvs, Git
 # history, local indexes, traces and the legacy prototype out of the build
 # context (including remote builder uploads and cached image layers).
 **
@@ -8,11 +8,19 @@
 cloud/**
 !cloud/api/
 !cloud/api/**
+!cloud/ui/
+!cloud/ui/**
+cloud/ui/node_modules/
+cloud/ui/dist/
 
 !local-enterprise-copilot/
 local-enterprise-copilot/**
 !local-enterprise-copilot/src/
 !local-enterprise-copilot/src/**
+!local-enterprise-copilot/scripts/
+local-enterprise-copilot/scripts/**
+!local-enterprise-copilot/scripts/build_index.py
+!local-enterprise-copilot/scripts/build_duckdb.py
 !local-enterprise-copilot/data/
 local-enterprise-copilot/data/**
 !local-enterprise-copilot/data/documents/
@@ -32,3 +40,9 @@ local-enterprise-copilot/evals/**
 **/__pycache__/
 **/*.py[cod]
 **/.streamlit/secrets.toml
+**/node_modules/
+**/data/qdrant*/
+# The UI's public build-mode file (no secrets; see the file). Every other
+# .env.* - including a developer's cloud/ui/.env.local - stays out.
+!cloud/ui/.env.open
+**/data/documents/uploads/

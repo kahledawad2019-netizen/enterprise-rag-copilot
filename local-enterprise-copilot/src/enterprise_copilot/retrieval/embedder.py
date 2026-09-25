@@ -48,6 +48,20 @@ class EmbeddingStats:
         return self.texts / self.total_seconds if self.total_seconds else 0.0
 
 
+def default_prefixes(model: str) -> tuple[str, str]:
+    """(query_prefix, document_prefix) the model was trained with.
+
+    nomic-embed-text is trained asymmetrically and documents that retrieval
+    inputs must carry `search_query: ` / `search_document: `. Without them it
+    still returns plausible neighbours, just worse ones - the quiet kind of
+    recall loss. Changing this changes the vectors, so the index version must
+    be bumped with it.
+    """
+    if "nomic-embed-text" in model.lower():
+        return "search_query: ", "search_document: "
+    return "", ""
+
+
 class OllamaEmbedder:
     """Embeds text with a local Ollama model.
 
@@ -61,13 +75,14 @@ class OllamaEmbedder:
         self,
         settings: Settings | None = None,
         *,
-        query_prefix: str = "",
-        document_prefix: str = "",
+        query_prefix: str | None = None,
+        document_prefix: str | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.model = self.settings.embedding_model
-        self.query_prefix = query_prefix
-        self.document_prefix = document_prefix
+        default_query, default_document = default_prefixes(self.model)
+        self.query_prefix = default_query if query_prefix is None else query_prefix
+        self.document_prefix = default_document if document_prefix is None else document_prefix
         self.stats = EmbeddingStats()
         self._dimension: int | None = None
 

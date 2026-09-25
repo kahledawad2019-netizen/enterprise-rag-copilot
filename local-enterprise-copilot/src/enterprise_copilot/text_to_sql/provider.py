@@ -192,7 +192,7 @@ class TextToSQLProvider(ABC):
 
 
 def build_provider(
-    settings: Settings | None = None, *, name: str | None = None
+    settings: Settings | None = None, *, name: str | None = None, embedder: Any = None
 ) -> TextToSQLProvider:
     """Construct the configured provider, falling back rather than failing.
 
@@ -207,6 +207,14 @@ def build_provider(
     visible rather than mysterious.
     """
     settings = settings or get_settings()
+    # Share the document retriever's embedder. Left to itself the schema
+    # retriever builds its own, which with in-process fastembed loads a second
+    # copy of the ONNX model: measured +330 MB RSS in the cloud image.
+    shared: dict[str, Any] = (
+        {"schema_retriever": SchemaRetriever(settings, embedder=embedder)}
+        if embedder is not None
+        else {}
+    )
     # The configured provider, not a literal. An explicit `name` still wins, so
     # the evaluation harness can compare implementations on demand.
     requested = (name or settings.text_to_sql_provider or "vanna").lower()
@@ -214,7 +222,7 @@ def build_provider(
     if requested == "native":
         from .native import NativeTextToSQLProvider
 
-        return NativeTextToSQLProvider(settings)
+        return NativeTextToSQLProvider(settings, **shared)
 
     if requested in ("vanna_cloud", "vanna-cloud"):
         # Falls back the same way the local provider does, but the reason is
@@ -227,7 +235,7 @@ def build_provider(
                 VannaCloudTextToSQLProvider,
             )
 
-            return VannaCloudTextToSQLProvider(settings)
+            return VannaCloudTextToSQLProvider(settings, **shared)
         except VannaCloudNotConfiguredError as exc:
             log.warning("Vanna Cloud is not configured (%s); using the native provider.", exc)
         except ImportError as exc:
@@ -238,12 +246,12 @@ def build_provider(
             )
         from .native import NativeTextToSQLProvider
 
-        return NativeTextToSQLProvider(settings)
+        return NativeTextToSQLProvider(settings, **shared)
 
     try:
         from .vanna_provider import VannaTextToSQLProvider
 
-        return VannaTextToSQLProvider(settings)
+        return VannaTextToSQLProvider(settings, **shared)
     except ImportError as exc:
         log.warning(
             "Vanna is unavailable (%s); using the native provider. "
@@ -252,7 +260,7 @@ def build_provider(
         )
         from .native import NativeTextToSQLProvider
 
-        return NativeTextToSQLProvider(settings)
+        return NativeTextToSQLProvider(settings, **shared)
 
 
 __all__ = [

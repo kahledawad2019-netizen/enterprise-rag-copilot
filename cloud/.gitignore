@@ -18,3 +18,5 @@ __pycache__/
 .env
 .env.*
 !.env.example
+# Public build-mode flags only (see the file); never a key.
+!ui/.env.open

@@ -59,6 +59,17 @@ class IngestionReport:
         )
 
 
+def sparse_index_path(settings: Settings) -> Path:
+    """Where the BM25 cache for the configured index version lives.
+
+    A function rather than only a pipeline property: constructing a pipeline
+    builds an embedder, and the retriever needs this path at startup and after
+    every upload. On the cloud image that meant loading a second ONNX model
+    just to compute a file name.
+    """
+    return settings.manifests_dir / f"bm25_{settings.vector_store.index_version}.pkl"
+
+
 class IngestionPipeline:
     def __init__(
         self,
@@ -241,9 +252,7 @@ class IngestionPipeline:
 
     @property
     def sparse_index_path(self) -> Path:
-        return self.settings.manifests_dir / (
-            f"bm25_{self.settings.vector_store.index_version}.pkl"
-        )
+        return sparse_index_path(self.settings)
 
     def write_manifest(self, manifest: IndexManifest) -> None:
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)

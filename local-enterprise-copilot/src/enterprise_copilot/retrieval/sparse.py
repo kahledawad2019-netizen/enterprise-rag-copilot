@@ -143,6 +143,9 @@ class BM25Index:
         dense path applies in Qdrant. Filtering before ranking (not after)
         matters: otherwise forbidden chunks consume top-k slots and the user
         silently receives fewer usable results.
+
+        None explicitly requests unrestricted search; an empty set denies all
+        chunks and must be used when permission lookup fails.
         """
         if not self.is_ready:
             return []

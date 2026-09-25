@@ -14,6 +14,10 @@ venv/
 
 # ---- Generated data (reproducible from scripts; keep the repo light) ----
 data/qdrant/
+# Per-mode indexes: run_local.py (local) and cloud rehearsals.
+data/qdrant-*/
+# Documents uploaded through the UI are user data, not corpus.
+data/documents/uploads/
 data/vanna_chroma/
 data/manifests/*.pkl
 data/logs/
@@ -57,3 +61,5 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+data/vanna_chroma_*/
+data/warehouse/

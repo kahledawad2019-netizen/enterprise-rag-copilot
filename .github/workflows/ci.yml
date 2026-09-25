@@ -249,7 +249,7 @@ jobs:
   # actually goes in.
   # ---------------------------------------------------------------------------
   docker:
-    name: Backend image
+    name: Cloud image (UI + API)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -269,15 +269,35 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # A built image that cannot import the application is a green build that
-      # ships a broken container. This catches a missing COPY or a dependency
-      # that resolved but does not load.
-      - name: Smoke-check the image imports the app
+      # A built image that cannot boot is a green build that ships a broken
+      # container. Run it as the host would (PORT injected), then check the
+      # baked index answers retrieval, the UI shell is served, and a failed
+      # Groq call (dummy key) reaches the browser without the key or the body.
+      - name: Smoke-test the running image
         run: |
-          docker run --rm \
-            -e BACKEND_TOKEN=ci-smoke-token \
-            enterprise-rag-copilot-api:ci \
-            python -c "import main; print('FastAPI app imported:', main.app.title)"
+          docker run -d --name smoke -p 10000:10000 -e PORT=10000 \
+            -e GROQ_API_KEY=gsk_ci_dummy_key_not_real \
+            enterprise-rag-copilot-api:ci
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:10000/api/health > health.json 2>/dev/null && break
+            sleep 2
+          done
+          cat health.json
+          grep -q '"status":"ok"' health.json
+          curl -fsS http://127.0.0.1:10000/ | grep -q '<div id="root">'
+          curl -fsS -X POST http://127.0.0.1:10000/api/retrieve \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"refund window for annual plans","strategies":["hybrid"],"limit":3}' \
+            | tee retrieve.json | grep -q 'DOC-REF-001'
+          curl -sS -X POST http://127.0.0.1:10000/api/ask \
+            -H 'Content-Type: application/json' \
+            -d '{"question":"What is the refund policy for annual plans?"}' > ask.json
+          cat ask.json
+          ! grep -q 'gsk_ci_dummy' ask.json
+          ! grep -q 'api.groq.com' ask.json
+      - name: Container logs
+        if: always()
+        run: docker logs smoke 2>&1 | tail -80 || true
 
   # ---------------------------------------------------------------------------
   # Single required status for branch protection.

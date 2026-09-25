@@ -3,6 +3,7 @@
 from .clients import (
     ChatClientError,
     EmbeddingClientError,
+    RateLimitedError,
     build_chat_client,
     build_embedding_client,
     describe_providers,
@@ -11,6 +12,7 @@ from .clients import (
 __all__ = [
     "ChatClientError",
     "EmbeddingClientError",
+    "RateLimitedError",
     "build_chat_client",
     "build_embedding_client",
     "describe_providers",

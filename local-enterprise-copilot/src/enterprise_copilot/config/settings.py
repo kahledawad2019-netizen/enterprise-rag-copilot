@@ -29,6 +29,13 @@ ENV_FILE = PROJECT_ROOT / ".env"
 
 KEYRING_SERVICE = "enterprise-copilot"
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b"
+# Each Groq model has its own free-tier rate budget; these take over, in
+# order, when the main model answers 429. Both cite as 【D1】, which
+# Answerer.finish normalises to [D1].
+DEFAULT_GROQ_FALLBACK_MODELS = "openai/gpt-oss-20b,openai/gpt-oss-120b"
+
 
 def resolve_path(value: object) -> object:
     """Resolve a relative path against the project root, not the CWD.
@@ -174,6 +181,28 @@ class PostgresSettings(BaseSettings):
         return dsn
 
 
+class DuckDBSettings(BaseSettings):
+    """Embedded analytics database (DATABASE_BACKEND=duckdb).
+
+    A file, not a server: built from sql/postgres + the synthetic generator
+    by scripts/build_duckdb.py (or on first start), then opened read-only.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_prefix="DUCKDB_",
+        extra="ignore",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    path: Path = PROJECT_ROOT / "data" / "warehouse" / "northwind.duckdb"
+    memory_limit: str = "512MB"
+    threads: int = 2
+
+    _resolve = field_validator("path", mode="before")(resolve_path)
+
+
 class OllamaSettings(BaseSettings):
     """Local inference runtime. No cloud provider is ever contacted."""
 
@@ -216,11 +245,17 @@ class LLMSettings(BaseSettings):
         protected_namespaces=(),
     )
 
-    provider: Literal["ollama", "openai"] = "ollama"
+    # "groq" is "openai" with Groq's endpoint and GROQ_* variables filled in.
+    provider: Literal["ollama", "openai", "groq"] = "ollama"
 
     # OpenAI-compatible endpoint. Groq is https://api.groq.com/openai/v1
-    base_url: str = "https://api.groq.com/openai/v1"
+    base_url: str = GROQ_BASE_URL
     api_key: SecretStr | None = None
+
+    # Groq's own variable names, accepted so a deployment can be configured
+    # with GROQ_API_KEY / GROQ_MODEL as Groq documents them. LLM_* wins.
+    groq_api_key: SecretStr | None = Field(default=None, validation_alias="GROQ_API_KEY")
+    groq_model: str = Field(default=DEFAULT_GROQ_MODEL, validation_alias="GROQ_MODEL")
 
     # Blank means "use the profile's model", which is right for Ollama and
     # wrong for a hosted API, where the name is provider-specific.
@@ -228,12 +263,37 @@ class LLMSettings(BaseSettings):
 
     timeout_seconds: float = 120.0
 
-    @field_validator("api_key", mode="before")
+    # Comma-separated models to try, in order, when the main one is rate
+    # limited (HTTP 429). Blank on Groq means DEFAULT_GROQ_FALLBACK_MODELS;
+    # "none" disables fallback.
+    fallback_models: str = ""
+    groq_fallback_models: str = Field(default="", validation_alias="GROQ_FALLBACK_MODELS")
+
+    @property
+    def fallback_model_list(self) -> list[str]:
+        raw = self.fallback_models or self.groq_fallback_models
+        if raw.strip().lower() == "none":
+            return []
+        if not raw.strip() and self.provider == "groq":
+            raw = DEFAULT_GROQ_FALLBACK_MODELS
+        return [m.strip() for m in raw.split(",") if m.strip()]
+
+    @field_validator("api_key", "groq_api_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _apply_groq_defaults(self) -> LLMSettings:
+        if self.provider == "groq":
+            object.__setattr__(self, "base_url", GROQ_BASE_URL)
+            if self.api_key is None and self.groq_api_key is not None:
+                object.__setattr__(self, "api_key", self.groq_api_key)
+            if not self.model:
+                object.__setattr__(self, "model", self.groq_model or DEFAULT_GROQ_MODEL)
+        return self
 
     @property
     def is_hosted(self) -> bool:
@@ -264,7 +324,10 @@ class EmbeddingSettings(BaseSettings):
         protected_namespaces=(),
     )
 
-    provider: Literal["ollama", "openai", "cloudflare"] = "ollama"
+    provider: Literal["ollama", "openai", "cloudflare", "fastembed"] = "ollama"
+
+    # fastembed only: where ONNX model files are cached.
+    cache_dir: str = ""
 
     # --- OpenAI-compatible ---
     base_url: str = "https://api.openai.com/v1"
@@ -517,7 +580,26 @@ class Settings(BaseSettings):
     profile_name: ProfileName = Field(default=ProfileName.STANDARD, alias="COPILOT_PROFILE")
     demo_mode: bool = Field(default=False, alias="COPILOT_DEMO_MODE")
     random_seed: int = Field(default=20240601, alias="COPILOT_SEED")
-    database_backend: Literal["sqlserver", "postgresql"] = Field(
+    # "none" runs documents-only: no database is contacted, Text-to-SQL is
+    # disabled, and data questions are answered from documents with an
+    # explicit note that live figures are unavailable. The cloud demo and a
+    # fresh local install use this.
+    # Whether the router consults the chat model (semantic intent screen and
+    # route classification) after its deterministic rules.
+    #   auto    only when it earns its cost: SQL is enabled (the route decides
+    #           whether a query runs) or the model is hosted and fast. In a
+    #           documents-only deployment on a local CPU model the two calls
+    #           cost ~50 s per question while every route ends in document
+    #           search anyway, and there is no database to protect.
+    #   always / never   force it.
+    # The destructive-intent rules run in every mode.
+    router_llm: Literal["auto", "always", "never"] = Field(default="auto", alias="ROUTER_LLM")
+    # Self-correction after the database rejects a guard-approved query: the
+    # error is fed back to the model and the new query is validated again.
+    # A guard refusal is never retried.
+    sql_execution_retries: int = Field(default=2, ge=0, le=5, alias="SQL_EXECUTION_RETRIES")
+
+    database_backend: Literal["sqlserver", "postgresql", "duckdb", "none"] = Field(
         default="sqlserver", alias="DATABASE_BACKEND"
     )
 
@@ -536,6 +618,7 @@ class Settings(BaseSettings):
 
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
+    duckdb: DuckDBSettings = Field(default_factory=DuckDBSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
@@ -557,8 +640,29 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def sql_enabled(self) -> bool:
+        return self.database_backend != "none"
+
+    @property
+    def router_uses_llm(self) -> bool:
+        if self.router_llm != "auto":
+            return self.router_llm == "always"
+        return self.sql_enabled or self.llm.is_hosted
+
+    @property
     def sql_dialect(self) -> Literal["tsql", "postgres"]:
-        return "postgres" if self.database_backend == "postgresql" else "tsql"
+        """The dialect the model writes and the guard validates.
+
+        DuckDB deployments use PostgreSQL here on purpose: the prompts,
+        few-shot examples and guard rules are the tested PostgreSQL ones, and
+        the approved statement is transpiled only at execution
+        (`execution_dialect`).
+        """
+        return "postgres" if self.database_backend in ("postgresql", "duckdb") else "tsql"
+
+    @property
+    def execution_dialect(self) -> Literal["tsql", "postgres", "duckdb"]:
+        return "duckdb" if self.database_backend == "duckdb" else self.sql_dialect
 
     @property
     def chat_model(self) -> str:
@@ -578,6 +682,8 @@ class Settings(BaseSettings):
     def embedding_model(self) -> str:
         if self.embeddings.model:
             return self.embeddings.model
+        if self.embeddings.provider == "fastembed":
+            return "nomic-ai/nomic-embed-text-v1.5-Q"
         return self.ollama.embedding_model or self.profile.embedding_model
 
     def ensure_directories(self) -> None:
@@ -601,21 +707,21 @@ class Settings(BaseSettings):
             "reranker": self.profile.reranker_model or "(disabled)",
             "ollama_host": self.ollama.host,
             "database_backend": self.database_backend,
-            "database_endpoint": (
-                "PostgreSQL (secret DSN)"
-                if self.database_backend == "postgresql"
-                else self.database.server
-            ),
-            "database": (
-                "PostgreSQL"
-                if self.database_backend == "postgresql"
-                else self.database.database
-            ),
-            "sql_auth": (
-                "dsn"
-                if self.database_backend == "postgresql"
-                else self.database.auth_mode
-            ),
+            "database_endpoint": {
+                "postgresql": "PostgreSQL (secret DSN)",
+                "duckdb": f"DuckDB file {self.duckdb.path.name} (read-only)",
+                "none": "(disabled)",
+            }.get(self.database_backend, self.database.server),
+            "database": {
+                "postgresql": "PostgreSQL",
+                "duckdb": "DuckDB",
+                "none": "(disabled)",
+            }.get(self.database_backend, self.database.database),
+            "sql_auth": {
+                "postgresql": "dsn",
+                "duckdb": "read-only file",
+                "none": "-",
+            }.get(self.database_backend, self.database.auth_mode),
             "vector_store": f"qdrant:{self.vector_store.mode}",
             "index_version": self.vector_store.index_version,
             "demo_mode": str(self.demo_mode),

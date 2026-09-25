@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,6 +74,7 @@ class CopilotTrace:
     sql_validation: str | None = None
     sql_blocked_reason: str | None = None
     sql_error: str | None = None
+    sql_repairs: int = 0  # self-corrections after a database error
     sql_row_count: int | None = None
 
     stage_ms: dict[str, float] = field(default_factory=dict)
@@ -102,6 +105,16 @@ class CopilotTrace:
         }
 
 
+@dataclass
+class Prepared:
+    """The result of routing and evidence gathering, before generation."""
+
+    trace: CopilotTrace
+    answer: Answer | None = None  # set for terminal routes
+    package: EvidencePackage | None = None
+    sql_result: QueryResult | None = None
+
+
 class Copilot:
     """The assembled system."""
 
@@ -127,7 +140,9 @@ class Copilot:
         """Built lazily: a document-only question should not pay for it."""
         if self._sql_provider is None and not self._sql_provider_failed:
             try:
-                self._sql_provider = build_provider(self.settings)
+                self._sql_provider = build_provider(
+                    self.settings, embedder=getattr(self.retriever, "embedder", None)
+                )
             except Exception as exc:
                 log.warning("Text-to-SQL unavailable: %s", exc)
                 self._sql_provider_failed = True
@@ -143,6 +158,68 @@ class Copilot:
         strategy: str = "reranked",
         approve_sql: bool = False,
     ) -> tuple[Answer, CopilotTrace]:
+        prepared = self.prepare(
+            question, user=user, tenant_id=tenant_id, strategy=strategy, approve_sql=approve_sql
+        )
+        if prepared.answer is not None:
+            return prepared.answer, prepared.trace
+        return self._generate(prepared), prepared.trace
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        user: UserContext | None = None,
+        tenant_id: int | None = None,
+        strategy: str = "reranked",
+    ) -> Iterator[tuple[str, Any]]:
+        """Stream an answer as events.
+
+        Yields `("prepared", Prepared)` once evidence is gathered - so a UI can
+        show sources before the first token - then `("token", str)` for each
+        piece of text, and finally `("answer", Answer)`, validated exactly
+        like a batch answer.
+        """
+        prepared = self.prepare(question, user=user, tenant_id=tenant_id, strategy=strategy)
+        yield "prepared", prepared
+        if prepared.answer is not None:
+            yield "answer", prepared.answer
+            return
+
+        assert prepared.package is not None
+        trace = prepared.trace
+        started = time.perf_counter()
+        parts: list[str] = []
+        try:
+            for token in self.answerer.stream_answer(prepared.package):
+                parts.append(token)
+                yield "token", token
+            _, status = self.answerer._prompt_for(prepared.package)
+            answer = self.answerer.finish(
+                prepared.package,
+                "".join(parts),
+                status=status,
+                started=started,
+                trace_id=trace.trace_id,
+            )
+        except GenerationError as exc:
+            answer = self._generation_failed(prepared, exc)
+        trace.stage_ms["generation"] = (time.perf_counter() - started) * 1000
+        self._attach_sql(prepared, answer)
+        self._finish(trace, answer)
+        yield "answer", answer
+
+    def prepare(
+        self,
+        question: str,
+        *,
+        user: UserContext | None = None,
+        tenant_id: int | None = None,
+        strategy: str = "reranked",
+        approve_sql: bool = False,
+    ) -> Prepared:
+        """Route and gather evidence. Returns a finished answer for terminal
+        routes (refuse, clarify), otherwise the evidence package to answer from."""
         user = user or UserContext.admin()
         self.tracer.reset()
         trace = CopilotTrace(
@@ -155,7 +232,7 @@ class Copilot:
         # ---- route ----
         started = time.perf_counter()
         with self.tracer.span("routing", question=question, user=user.user_name) as span:
-            decision = self.router.route(question)
+            decision = self.router.route(question, use_llm=self.settings.router_uses_llm)
             span.set(
                 route=decision.route.value,
                 decided_by=decision.decided_by,
@@ -169,21 +246,50 @@ class Copilot:
         if decision.route is Route.REFUSE:
             answer = self._refuse(question, decision, trace)
             self._finish(trace, answer)
-            return answer, trace
+            return Prepared(trace=trace, answer=answer)
         if decision.route is Route.CLARIFY:
             answer = self._clarify(question, decision, trace)
             self._finish(trace, answer)
-            return answer, trace
+            return Prepared(trace=trace, answer=answer)
+        if decision.route is Route.DIRECT:
+            answer = self._direct(question, decision, trace)
+            self._finish(trace, answer)
+            return Prepared(trace=trace, answer=answer)
 
         # ---- gather evidence ----
         document_evidence: list[Evidence] = []
         sql_evidence: list[Evidence] = []
         sql_result: QueryResult | None = None
 
-        if decision.needs_documents:
-            document_evidence = self._gather_documents(decision, user, strategy, trace)
+        # Documents-only deployments (DATABASE_BACKEND=none) never touch the
+        # database. A data question still searches the documents - the KPI
+        # glossary or a policy often answers part of it - and the model is told
+        # plainly that live figures are unavailable, rather than waiting on a
+        # connection timeout that can never succeed.
+        sql_available = self.settings.sql_enabled
+        needs_documents = decision.needs_documents or (decision.needs_sql and not sql_available)
 
-        if decision.needs_sql:
+        run_sql = decision.needs_sql and sql_available
+        if needs_documents and run_sql:
+            # Hybrid: the two halves are independent, so they run side by
+            # side. On a hosted model this roughly halves the wait; on a local
+            # one retrieval simply overlaps SQL generation. The worker adopts
+            # the caller's open span so its spans nest under the same parent.
+            stack = self.tracer.current_stack()
+
+            def documents() -> list[Evidence]:
+                self.tracer.adopt(stack)
+                return self._gather_documents(decision, user, strategy, trace)
+
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hybrid-docs") as pool:
+                future = pool.submit(documents)
+                sql_evidence, sql_result = self._gather_sql(
+                    decision, user, tenant_id, trace, approve_sql
+                )
+                document_evidence = future.result()
+        elif needs_documents:
+            document_evidence = self._gather_documents(decision, user, strategy, trace)
+        elif run_sql:
             sql_evidence, sql_result = self._gather_sql(
                 decision, user, tenant_id, trace, approve_sql
             )
@@ -200,7 +306,14 @@ class Copilot:
         # idea why, and invents a plausible-sounding non-answer. It happened:
         # a failed query produced advice to "check the Sales Dashboard", which
         # does not exist.
-        if decision.needs_sql and not sql_evidence:
+        if decision.needs_sql and not sql_available:
+            package.notes.append(
+                "Live database queries are not enabled in this deployment, so no measured "
+                "figures (counts, totals, rankings) are available. Answer only what the "
+                "documents support, and state plainly that the data part of the question "
+                "cannot be answered here. Do NOT invent figures."
+            )
+        elif decision.needs_sql and not sql_evidence:
             if trace.sql_blocked_reason:
                 package.notes.append(
                     f"The database query was blocked by the safety guard: "
@@ -224,7 +337,11 @@ class Copilot:
                 "Policy statements are cited [D...]; measured values are cited [S...]."
             )
 
-        # ---- answer ----
+        return Prepared(trace=trace, package=package, sql_result=sql_result)
+
+    def _generate(self, prepared: Prepared) -> Answer:
+        assert prepared.package is not None
+        package, trace = prepared.package, prepared.trace
         started = time.perf_counter()
         try:
             with self.tracer.span(
@@ -240,24 +357,34 @@ class Copilot:
                     model=answer.model,
                 )
         except GenerationError as exc:
-            trace.errors.append(f"generation: {exc}")
-            answer = Answer(
-                question=question,
-                text=f"The answer could not be generated: {exc}",
-                status=AnswerStatus.INSUFFICIENT_EVIDENCE,
-                evidence=package,
-                trace_id=trace.trace_id,
-            )
+            answer = self._generation_failed(prepared, exc)
         trace.stage_ms["generation"] = (time.perf_counter() - started) * 1000
 
-        if sql_result is not None:
-            answer.generated_sql = sql_result.executed_sql
-            answer.sql_row_count = sql_result.row_count
-        elif trace.generated_sql:
-            answer.generated_sql = trace.generated_sql
-
+        self._attach_sql(prepared, answer)
         self._finish(trace, answer)
-        return answer, trace
+        return answer
+
+    def _generation_failed(self, prepared: Prepared, exc: Exception) -> Answer:
+        # The detail stays in the trace and the log; the user-facing text
+        # must not carry provider error bodies, hosts or paths.
+        prepared.trace.errors.append(f"generation: {exc}")
+        log.warning("Generation failed: %s", exc)
+        return Answer(
+            question=prepared.trace.question,
+            text="The answer could not be generated because the language model is "
+            "unavailable right now. Please try again shortly.",
+            status=AnswerStatus.INSUFFICIENT_EVIDENCE,
+            evidence=prepared.package,
+            trace_id=prepared.trace.trace_id,
+        )
+
+    @staticmethod
+    def _attach_sql(prepared: Prepared, answer: Answer) -> None:
+        if prepared.sql_result is not None:
+            answer.generated_sql = prepared.sql_result.executed_sql
+            answer.sql_row_count = prepared.sql_result.row_count
+        elif prepared.trace.generated_sql:
+            answer.generated_sql = prepared.trace.generated_sql
 
     def _finish(self, trace: CopilotTrace, answer: Answer) -> None:
         """Write the trace to disk. Never allowed to fail the request."""
@@ -299,6 +426,39 @@ class Copilot:
         answer.trace_id = trace.trace_id
         trace.stage_ms["refusal"] = (time.perf_counter() - started) * 1000
         return answer
+
+    def _direct(self, question: str, decision: RoutingDecision, trace: CopilotTrace) -> Answer:
+        """Small talk and "what can you do". A template, not a model call:
+        instant on a CPU model, and it cannot invent company facts."""
+        sources = "company documents (policies, SLAs, incident reports, glossary)"
+        if self.settings.sql_enabled:
+            sources += " and the company database (customers, subscriptions, billing, support)"
+        examples = [
+            "What is the refund policy for annual plans?",
+            "What happened in INC-2025-0042?",
+        ]
+        if self.settings.sql_enabled:
+            examples += [
+                "Which five customers have the highest ARR?",
+                "Show customers with more than three SLA breaches and summarise the SLA policy.",
+            ]
+        capabilities = (
+            f"I answer questions from {sources}, and every answer cites its sources. "
+            "I am read-only: I cannot change, delete or export data.\n\n"
+            "Try for example:\n" + "\n".join(f"- {e}" for e in examples)
+        )
+        text = {
+            "greeting": "Hello! " + capabilities,
+            "thanks": "You're welcome. Ask me anything else about the company's "
+            "policies" + (" or data." if self.settings.sql_enabled else "."),
+        }.get(decision.reason, capabilities)
+        trace.stage_ms["direct"] = 0.0
+        return Answer(
+            question=question,
+            text=text,
+            status=AnswerStatus.DIRECT,
+            trace_id=trace.trace_id,
+        )
 
     def _clarify(self, question: str, decision: RoutingDecision, trace: CopilotTrace) -> Answer:
         started = time.perf_counter()
@@ -402,26 +562,45 @@ class Copilot:
             return [], None
 
         started = time.perf_counter()
-        try:
-            with self.tracer.span("sql_execution", sql=generated.sql) as span:
-                result = provider.execute_query(generated.sql, request=request, approved=approved)
-                span.set(rows=result.row_count, duration_ms=result.duration_ms)
-            trace.sql_validation = "allowed"
-        except QueryBlockedError as exc:
-            trace.sql_validation = "blocked"
-            trace.sql_blocked_reason = exc.result.reason
-            trace.stage_ms["sql_execution"] = (time.perf_counter() - started) * 1000
-            log.info("SQL blocked for trace %s: %s", trace.trace_id, exc.result.reason)
-            return [], None
-        except QueryExecutionError as exc:
-            # The guard PASSED and the server rejected the query. Labelling
-            # this "failed" next to the guard verdict made it look as though
-            # the guard had failed, which it had not.
-            trace.sql_validation = "execution_error"
-            trace.sql_error = str(exc)[:400]
-            trace.errors.append(f"sql execution: {exc}")
-            trace.stage_ms["sql_execution"] = (time.perf_counter() - started) * 1000
-            return [], None
+        sql = generated.sql
+        retries = max(0, self.settings.sql_execution_retries)
+        for attempt in range(retries + 1):
+            try:
+                with self.tracer.span("sql_execution", sql=sql, attempt=attempt) as span:
+                    result = provider.execute_query(sql, request=request, approved=approved)
+                    span.set(rows=result.row_count, duration_ms=result.duration_ms)
+                trace.sql_validation = "allowed"
+                break
+            except QueryBlockedError as exc:
+                # Never retried: a blocked query is a policy decision, and
+                # asking the model to "fix" it is asking it to evade the guard.
+                trace.sql_validation = "blocked"
+                trace.sql_blocked_reason = exc.result.reason
+                trace.stage_ms["sql_execution"] = (time.perf_counter() - started) * 1000
+                log.info("SQL blocked for trace %s: %s", trace.trace_id, exc.result.reason)
+                return [], None
+            except QueryExecutionError as exc:
+                # The guard PASSED and the server rejected the query. Labelling
+                # this "failed" next to the guard verdict made it look as though
+                # the guard had failed, which it had not.
+                log.info("SQL attempt %d failed: %s", attempt + 1, str(exc)[:300])
+                repaired = (
+                    provider._repair_sql(sql, [_database_error(exc)])
+                    if attempt < retries
+                    else ""
+                )
+                if not repaired or repaired.strip() == sql.strip():
+                    trace.errors.append(f"sql execution: {exc}")
+                    trace.sql_validation = "execution_error"
+                    trace.sql_error = str(exc)[:400]
+                    trace.stage_ms["sql_execution"] = (time.perf_counter() - started) * 1000
+                    return [], None
+                # The corrected query goes back through execute_query, so the
+                # guard validates it exactly like the first one.
+                log.info("SQL self-correction attempt %d for trace %s", attempt + 1, trace.trace_id)
+                sql = repaired
+                trace.generated_sql = sql
+                trace.sql_repairs += 1
 
         trace.stage_ms["sql_execution"] = (time.perf_counter() - started) * 1000
         trace.sql_row_count = result.row_count
@@ -456,6 +635,20 @@ class Copilot:
 
     def close(self) -> None:
         self.retriever.close()
+
+
+def _database_error(exc: Exception) -> str:
+    """The server's complaint, for the repair prompt.
+
+    Only the database message goes back to the model - it names the bad
+    column or function, which is what makes a repair possible. The wrapper
+    text is dropped so the model is not told how the application is built.
+    """
+    text = str(exc)
+    marker = "failed at the server: "
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    return "The database rejected the query: " + text[:400]
 
 
 __all__ = ["Copilot", "CopilotTrace"]
