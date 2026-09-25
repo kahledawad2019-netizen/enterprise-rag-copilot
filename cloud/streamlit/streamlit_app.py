@@ -449,10 +449,22 @@ def answer(question: str, persona_key: str) -> dict:
 
 
 def main() -> None:
-    if not os.environ.get("GROQ_API_KEY"):
+    key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not key:
         st.error(
             "GROQ_API_KEY is not configured. In Streamlit Community Cloud open "
-            "**Manage app → Settings → Secrets** and add `GROQ_API_KEY = \"gsk_...\"`."
+            "**Manage app → Settings → Secrets** and paste the contents of "
+            "`.streamlit/secrets.toml.example`, with your key in place of the brackets."
+        )
+        st.stop()
+    if key.startswith("[") or "PASTE_YOUR" in key:
+        # The template was pasted but the placeholder was left in. Without
+        # this check Groq answers 401 and every question fails with a vague
+        # "language model unavailable".
+        st.error(
+            "GROQ_API_KEY still contains the template placeholder. Replace "
+            "`[PASTE_YOUR_GROQ_API_KEY_HERE]` (brackets included) with your real key "
+            "from https://console.groq.com/keys, then save the secrets."
         )
         st.stop()
 
