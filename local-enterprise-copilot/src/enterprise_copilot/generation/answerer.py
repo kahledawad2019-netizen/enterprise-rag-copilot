@@ -116,9 +116,13 @@ class Answerer:
         Shared by the batch and streaming paths so a streamed answer is judged
         by exactly the same rules as a batch one.
         """
+        # Some hosted models (gpt-oss on Groq) cite as 【D1】. Validation looks
+        # for [D1], so without this every citation reads as missing and a
+        # grounded answer is reported as ungrounded.
+        text = text.replace("【", "[").replace("】", "]").strip()
         answer = Answer(
             question=package.question,
-            text=text.strip(),
+            text=text,
             status=status,
             evidence=package,
             model=self.settings.chat_model,

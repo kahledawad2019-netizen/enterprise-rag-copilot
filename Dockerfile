@@ -50,7 +50,7 @@ ENV PYTHONUNBUFFERED=1 \
     HOME=/home/copilot \
     # --- cloud defaults; every one can be overridden by the host ---
     LLM_PROVIDER=groq \
-    GROQ_MODEL=llama-3.3-70b-versatile \
+    GROQ_MODEL=qwen/qwen3.8-27b \
     EMBEDDING_PROVIDER=fastembed \
     EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5-Q \
     EMBEDDING_CACHE_DIR=/app/models \

@@ -168,6 +168,8 @@ module = [
     # only), so a clean install has nothing for mypy to resolve. Local runs
     # passed solely because a developer happened to have it installed - which
     # is the machine-specific release gate this block exists to prevent.
+    "fastembed",
+    "fastembed.*",
     "vanna",
     "vanna.*",
 ]

@@ -56,7 +56,7 @@ The badge in the sidebar reads **LOCAL — OLLAMA** with the model name.
 | Need | Choice | Why |
 |---|---|---|
 | Run the Python RAG stack (FastAPI, Qdrant client, ONNX) | **Render free web service (Docker)** | Free, no card, builds from GitHub, 512 MB is enough (measured 310 MB RSS). |
-| Chat model | **Groq** | Free tier, fast (~280 tok/s for Llama 3.3 70B), OpenAI-compatible. |
+| Chat model | **Groq** | Free tier, very fast, OpenAI-compatible. Default model `qwen/qwen3.8-27b`: 0.3 s for a grounded answer in testing. |
 | Embeddings | **fastembed (ONNX) in the container** | No GPU, no second API key; same nomic model family as local. |
 | Vector store | **Embedded Qdrant, built into the image** | The corpus ships with the code, so the index is built at image build; no hosted vector DB to provision. |
 | Frontend | **Served by the same container** | One URL, no CORS, no build-time API address. |
@@ -90,7 +90,7 @@ curl https://<service>.onrender.com/api/health     # {"status":"ok", ...}
 | Variable | Where | Default | Notes |
 |---|---|---|---|
 | `GROQ_API_KEY` | Render secret | — | **Required.** Never in a file, never in the UI bundle. |
-| `GROQ_MODEL` | render.yaml | `llama-3.3-70b-versatile` | Any Groq chat model id. |
+| `GROQ_MODEL` | render.yaml | `qwen/qwen3.8-27b` | Any chat model your Groq key can use (`GET /openai/v1/models`). Prefer one that cites as `[D1]`; see below. |
 | `RATE_LIMIT_PER_MINUTE` | render.yaml | `12` | Per client address, on ask/upload/retrieve. |
 | `API_AUTH_MODE` | Dockerfile | `public` | `token` requires the gateway's bearer token. |
 | `UPLOADS_ENABLED` | Dockerfile | `true` | Uploaded files are public within the deployment and ephemeral on Render free. |

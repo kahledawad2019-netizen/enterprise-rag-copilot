@@ -30,7 +30,7 @@ ENV_FILE = PROJECT_ROOT / ".env"
 KEYRING_SERVICE = "enterprise-copilot"
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_MODEL = "qwen/qwen3.8-27b"
 
 
 def resolve_path(value: object) -> object:

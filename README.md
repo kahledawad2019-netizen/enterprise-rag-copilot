@@ -7,7 +7,7 @@ from one codebase:
 
 | | Local / private | Cloud / public |
 |---|---|---|
-| Chat model | Ollama (auto-picks an installed model) | Groq (`llama-3.3-70b-versatile`) |
+| Chat model | Ollama (auto-picks an installed model) | Groq (`qwen/qwen3.8-27b`) |
 | Embeddings | Ollama `nomic-embed-text` | fastembed ONNX (same nomic family), in-process |
 | Hosting | your machine | Render free plan, one Docker container |
 | Leaves the machine | nothing | question + retrieved passages go to Groq |

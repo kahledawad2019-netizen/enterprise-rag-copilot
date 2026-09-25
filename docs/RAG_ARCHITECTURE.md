@@ -10,7 +10,7 @@ the two deployment modes, and what is known to be weak.
 | Entry point | `run_local.py` → `cloud/api/server.py` | `Dockerfile` → `cloud/api/server.py` on Render |
 | Frontend | React 19 + Vite (`cloud/ui`), served by the same process | same build |
 | Backend | FastAPI (`cloud/api/main.py`) wrapping `enterprise_copilot.Copilot` | same |
-| Chat model | Ollama, auto-picked (default `qwen3:4b-instruct-2507-q4_K_M`) | Groq `llama-3.3-70b-versatile` |
+| Chat model | Ollama, auto-picked (default `qwen3:4b-instruct-2507-q4_K_M`) | Groq `qwen/qwen3.8-27b` |
 | Embeddings | Ollama `nomic-embed-text` (768-d) | fastembed ONNX `nomic-ai/nomic-embed-text-v1.5-Q` (768-d), in-process |
 | Vector DB | embedded Qdrant, `local-enterprise-copilot/data/qdrant-local` | embedded Qdrant, built into the image |
 | Sparse index | BM25 (`rank-bm25`), cached pickle next to the manifest | same |
